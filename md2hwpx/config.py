@@ -82,6 +82,21 @@ class ConversionConfig:
     DEFAULT_PARA_PR_ID = 0
     DEFAULT_STYLE_ID = 0
 
+    # === Quarto/Pandoc Preprocessing ===
+    STRIP_FENCED_DIVS: bool = False          # Remove ::: {.class} / ::: lines
+    STRIP_PANDOC_ATTRIBUTES: bool = False     # Remove {.class #id} from inline elements
+    STRIP_HTML_STYLE_BLOCKS: bool = False     # Remove <style>...</style> blocks
+    STRIP_CELL_CODE_BLOCKS: bool = False      # Remove ``` {.python .cell-code} blocks
+    MATH_HANDLING: str = 'none'              # 'none' | 'italic'
+
+    def enable_quarto_defaults(self):
+        """Enable all Quarto-related preprocessing with sensible defaults."""
+        self.STRIP_FENCED_DIVS = True
+        self.STRIP_PANDOC_ATTRIBUTES = True
+        self.STRIP_HTML_STYLE_BLOCKS = True
+        self.STRIP_CELL_CODE_BLOCKS = True
+        self.MATH_HANDLING = 'italic'
+
     # === Security Limits ===
     MAX_INPUT_FILE_SIZE = 50 * 1024 * 1024  # 50 MB max input file
     MAX_TEMPLATE_FILE_SIZE = 50 * 1024 * 1024  # 50 MB max template file

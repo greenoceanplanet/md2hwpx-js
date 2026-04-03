@@ -40,7 +40,8 @@ def convert_string(markdown_string, output_path, reference_doc=None, config=None
     metadata, md_content = parse_markdown_string_with_frontmatter(markdown_string)
 
     # Convert to Pandoc-like AST
-    adapter = MarkoToPandocAdapter()
+    effective_config = config if config is not None else DEFAULT_CONFIG
+    adapter = MarkoToPandocAdapter(config=effective_config)
     ast = adapter.parse(md_content)
     ast['meta'] = convert_metadata_to_pandoc_meta(metadata)
 

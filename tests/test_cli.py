@@ -215,6 +215,37 @@ class TestCLIUnsupportedOutput:
         assert 'unsupported' in result.stderr.lower() or 'error' in result.stderr.lower()
 
 
+class TestCLIQuartoFlags:
+    """Test Quarto/Pandoc preprocessing CLI flags."""
+
+    def test_strip_quarto_flag(self, tmp_path):
+        md_file = str(tmp_path / "quarto.md")
+        with open(md_file, 'w', encoding='utf-8') as f:
+            f.write("::: {.cell}\nHello world\n:::\n")
+        output = str(tmp_path / "out.hwpx")
+        result = run_cli(md_file, '-o', output, '--strip-quarto')
+        assert result.returncode == 0
+        assert os.path.exists(output)
+
+    def test_individual_flags(self, tmp_path):
+        md_file = str(tmp_path / "test.md")
+        with open(md_file, 'w', encoding='utf-8') as f:
+            f.write("Hello world\n")
+        output = str(tmp_path / "out.hwpx")
+        result = run_cli(md_file, '-o', output,
+                         '--strip-fenced-divs', '--strip-pandoc-attributes',
+                         '--strip-html-style', '--strip-cell-code')
+        assert result.returncode == 0
+
+    def test_math_flag(self, tmp_path):
+        md_file = str(tmp_path / "math.md")
+        with open(md_file, 'w', encoding='utf-8') as f:
+            f.write("The formula $E = mc^2$ is famous.\n")
+        output = str(tmp_path / "out.hwpx")
+        result = run_cli(md_file, '-o', output, '--math', 'italic')
+        assert result.returncode == 0
+
+
 class TestEndToEnd:
     """End-to-end tests using the Python API directly."""
 

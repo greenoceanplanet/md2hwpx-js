@@ -19,7 +19,18 @@ class MarkoToPandocAdapter:
     # Regex to match table separator lines (e.g., |---|-----------|---|)
     TABLE_SEPARATOR_RE = re.compile(r'^\|[\s:]*-')
 
-    def __init__(self):
+    # Regex patterns for Quarto/Pandoc preprocessing
+    FENCED_DIV_OPEN_RE = re.compile(r'^:{3,}\s*\{[^}]*\}\s*$')
+    FENCED_DIV_CLOSE_RE = re.compile(r'^:{3,}\s*$')
+    STYLE_BLOCK_RE = re.compile(r'<style[^>]*>.*?</style>', re.DOTALL | re.IGNORECASE)
+    PANDOC_ATTR_RE = re.compile(r'\{[#.][^}]*\}')
+    BLOCK_MATH_RE = re.compile(r'\$\$[^$]+\$\$', re.DOTALL)
+    INLINE_MATH_RE = re.compile(r'(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)')
+    BLOCK_MATH_DELIM_RE = re.compile(r'^\$\$\s*\n(.*?)\n\s*\$\$\s*$', re.MULTILINE | re.DOTALL)
+
+    def __init__(self, config=None):
+        from .config import DEFAULT_CONFIG
+        self.config = config if config is not None else DEFAULT_CONFIG
         # Initialize Marko with GFM (tables, strikethrough, etc.) and Footnote support
         # Extensions are loaded by name string
         self.md = Markdown(extensions=['gfm', 'footnote'])
@@ -27,6 +38,7 @@ class MarkoToPandocAdapter:
         self.extended_headers = {}  # Store extended header placeholders
         self.table_dash_counts = {}  # Store dash counts per table separator
         self.table_counter = 0  # Track table index during conversion
+        self._math_blocks = {}  # Store block math placeholders
 
     def _preprocess_extended_headers(self, markdown_text: str) -> str:
         """
@@ -101,6 +113,88 @@ class MarkoToPandocAdapter:
                 self.table_dash_counts[table_index] = dash_counts
                 table_index += 1
 
+    def _preprocess_strip_cell_code(self, text: str) -> str:
+        """Remove fenced code blocks with .cell-code class (Quarto source output)."""
+        lines = text.split('\n')
+        result = []
+        in_cell_code = False
+        fence_re = re.compile(r'^`{3,}')
+
+        for line in lines:
+            if not in_cell_code:
+                if fence_re.match(line) and '.cell-code' in line:
+                    in_cell_code = True
+                    continue
+                result.append(line)
+            else:
+                if fence_re.match(line.strip()):
+                    in_cell_code = False
+                    continue
+                # Skip content inside cell-code block
+        return '\n'.join(result)
+
+    def _preprocess_strip_fenced_divs(self, text: str) -> str:
+        """Remove Pandoc fenced div markers, keeping inner content."""
+        lines = text.split('\n')
+        result = []
+        for line in lines:
+            stripped = line.strip()
+            if self.FENCED_DIV_OPEN_RE.match(stripped):
+                continue
+            if self.FENCED_DIV_CLOSE_RE.match(stripped):
+                continue
+            result.append(line)
+        return '\n'.join(result)
+
+    def _preprocess_strip_html_style(self, text: str) -> str:
+        """Remove <style>...</style> blocks."""
+        return self.STYLE_BLOCK_RE.sub('', text)
+
+    def _preprocess_math(self, text: str) -> str:
+        """Convert LaTeX math to internal representations.
+
+        Block math ($$...$$) becomes placeholder paragraphs restored after parsing.
+        Inline math ($...$) becomes italic text (*...*).
+        """
+        self._math_blocks = {}
+        counter = [0]
+
+        def replace_block_math(match):
+            content = match.group(1).strip()
+            key = f"MATHBLOCK{counter[0]}MARKER"
+            self._math_blocks[key] = content
+            counter[0] += 1
+            return f"\n\n{key}\n\n"
+
+        result = self.BLOCK_MATH_DELIM_RE.sub(replace_block_math, text)
+        # Inline math: strip delimiters and wrap in emphasis
+        result = self.INLINE_MATH_RE.sub(r'*\1*', result)
+        return result
+
+    def _preprocess_strip_pandoc_attributes(self, text: str) -> str:
+        """Remove Pandoc inline attributes ({.class #id}) while protecting math regions."""
+        # Protect math regions with placeholders
+        math_placeholders = {}
+        counter = [0]
+
+        def protect_math(match):
+            key = f"__MATH_PROTECT_{counter[0]}__"
+            math_placeholders[key] = match.group(0)
+            counter[0] += 1
+            return key
+
+        protected = self.BLOCK_MATH_RE.sub(protect_math, text)
+        protected = self.INLINE_MATH_RE.sub(protect_math, protected)
+
+        # Strip Pandoc attributes
+        protected = self.PANDOC_ATTR_RE.sub('', protected)
+
+        # Restore math
+        for key, value in math_placeholders.items():
+            protected = protected.replace(key, value)
+
+        return protected
+
     def _get_col_width_info(self, table_index, col_idx):
         """Get width info dict for a column from stored dash counts.
 
@@ -133,12 +227,27 @@ class MarkoToPandocAdapter:
         self.footnotes = {}
         self.table_dash_counts = {}
         self.table_counter = 0
+        self._math_blocks = {}
+
+        processed_text = markdown_text
+
+        # Quarto/Pandoc preprocessing (before Marko parsing)
+        if self.config.STRIP_CELL_CODE_BLOCKS:
+            processed_text = self._preprocess_strip_cell_code(processed_text)
+        if self.config.STRIP_FENCED_DIVS:
+            processed_text = self._preprocess_strip_fenced_divs(processed_text)
+        if self.config.STRIP_HTML_STYLE_BLOCKS:
+            processed_text = self._preprocess_strip_html_style(processed_text)
+        if self.config.MATH_HANDLING != 'none':
+            processed_text = self._preprocess_math(processed_text)
+        if self.config.STRIP_PANDOC_ATTRIBUTES:
+            processed_text = self._preprocess_strip_pandoc_attributes(processed_text)
 
         # Preprocess to handle extended headers (7-9)
-        processed_text = self._preprocess_extended_headers(markdown_text)
+        processed_text = self._preprocess_extended_headers(processed_text)
 
         # Extract table dash counts for proportional column widths
-        self._preprocess_table_dashes(markdown_text)
+        self._preprocess_table_dashes(processed_text)
 
         doc = self.md.parse(processed_text)
 
@@ -150,8 +259,9 @@ class MarkoToPandocAdapter:
         for child in doc.children:
             block = self._convert_block(child)
             if block:
-                # Check if this is an extended header placeholder
+                # Check if this is an extended header or math placeholder
                 block = self._restore_extended_header(block)
+                block = self._restore_math_block(block)
                 blocks.append(block)
 
         return {
@@ -183,6 +293,25 @@ class MarkoToPandocAdapter:
             info = self.extended_headers[text]
             return self._create_extended_header_block(info['level'], info['content'])
 
+        return block
+
+    def _restore_math_block(self, block: dict) -> dict:
+        """Check if a block is a math placeholder and restore as italic paragraph."""
+        if block.get('t') != 'Para':
+            return block
+        inlines = block.get('c', [])
+        if len(inlines) != 1:
+            return block
+        first = inlines[0]
+        if first.get('t') != 'Str':
+            return block
+        text = first.get('c', '')
+        if text in self._math_blocks:
+            content = self._math_blocks[text]
+            return {
+                "t": "Para",
+                "c": [{"t": "Emph", "c": self._convert_raw_text(content)}]
+            }
         return block
 
     def _convert_block(self, element) -> dict | None:

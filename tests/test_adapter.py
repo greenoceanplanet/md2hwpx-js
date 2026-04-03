@@ -356,3 +356,158 @@ class TestAdapterFallbackEmphasis:
         strong = next(i for i in inlines if i.get('t') == 'Strong')
         inner_strs = [s['c'] for s in strong['c'] if s.get('t') == 'Str']
         assert 'Report)' in inner_strs
+
+
+class TestQuartoPreprocessing:
+    """Test Quarto/Pandoc preprocessing features."""
+
+    def _make_adapter(self, **kwargs):
+        from md2hwpx.config import ConversionConfig
+        config = ConversionConfig()
+        for k, v in kwargs.items():
+            setattr(config, k.upper(), v)
+        return MarkoToPandocAdapter(config=config)
+
+    def test_strip_fenced_divs_basic(self):
+        adapter = self._make_adapter(strip_fenced_divs=True)
+        md = "::: {.cell}\nHello world\n:::"
+        result = adapter.parse(md)
+        assert len(result['blocks']) == 1
+        assert result['blocks'][0]['t'] == 'Para'
+
+    def test_strip_fenced_divs_nested(self):
+        adapter = self._make_adapter(strip_fenced_divs=True)
+        md = "::::: {.cell execution_count=\"2\"}\n:::: {.cell-output}\n::: {}\nContent here\n:::\n::::\n:::::"
+        result = adapter.parse(md)
+        assert len(result['blocks']) == 1
+        assert result['blocks'][0]['t'] == 'Para'
+
+    def test_strip_fenced_divs_preserves_content(self):
+        adapter = self._make_adapter(strip_fenced_divs=True)
+        md = "::: {.cell}\n\n# Header\n\nParagraph text\n\n:::"
+        result = adapter.parse(md)
+        types = [b['t'] for b in result['blocks']]
+        assert 'Header' in types
+        assert 'Para' in types
+
+    def test_strip_pandoc_attributes(self):
+        adapter = self._make_adapter(strip_pandoc_attributes=True)
+        md = "[표 1](#tbl-litreview){.quarto-xref}"
+        result = adapter.parse(md)
+        blocks = result['blocks']
+        assert len(blocks) == 1
+        inlines = blocks[0]['c']
+        link = [i for i in inlines if i.get('t') == 'Link']
+        assert len(link) == 1
+
+    def test_strip_pandoc_attributes_preserves_math(self):
+        """Pandoc attribute removal must not touch {} inside $...$."""
+        adapter = self._make_adapter(strip_pandoc_attributes=True, math_handling='italic')
+        md = "The value $x_{i}$ is important{.note}"
+        result = adapter.parse(md)
+        inlines = result['blocks'][0]['c']
+        # Should have Emph for math (containing x_{i})
+        emph_items = [i for i in inlines if i.get('t') == 'Emph']
+        assert len(emph_items) >= 1
+        # {.note} should be stripped (not appear as text)
+        all_text = ''
+        for i in inlines:
+            if i.get('t') == 'Str':
+                all_text += i['c']
+        assert '{.note}' not in all_text
+
+    def test_strip_html_style(self):
+        adapter = self._make_adapter(strip_html_style_blocks=True)
+        md = "<style scoped>\n.dataframe { color: red; }\n</style>\n\nHello"
+        result = adapter.parse(md)
+        # Only the paragraph should remain
+        para_blocks = [b for b in result['blocks'] if b['t'] == 'Para']
+        assert len(para_blocks) == 1
+
+    def test_strip_cell_code(self):
+        adapter = self._make_adapter(strip_cell_code_blocks=True)
+        md = "``` {.python .cell-code}\nimport os\nprint('hello')\n```\n\nOutput text"
+        result = adapter.parse(md)
+        # Code block should be gone, only paragraph remains
+        types = [b['t'] for b in result['blocks']]
+        assert 'CodeBlock' not in types
+        assert 'Para' in types
+
+    def test_strip_cell_code_preserves_normal_code(self):
+        adapter = self._make_adapter(strip_cell_code_blocks=True)
+        md = "```python\nprint('hello')\n```\n\nText"
+        result = adapter.parse(md)
+        types = [b['t'] for b in result['blocks']]
+        assert 'CodeBlock' in types
+
+    def test_inline_math_becomes_italic(self):
+        adapter = self._make_adapter(math_handling='italic')
+        md = "The formula $E = mc^2$ is famous."
+        result = adapter.parse(md)
+        inlines = result['blocks'][0]['c']
+        emph_items = [i for i in inlines if i.get('t') == 'Emph']
+        assert len(emph_items) >= 1
+
+    def test_block_math_becomes_paragraph(self):
+        adapter = self._make_adapter(math_handling='italic')
+        md = "Text before\n\n$$\nE = mc^2\n$$\n\nText after"
+        result = adapter.parse(md)
+        assert len(result['blocks']) == 3
+        # Middle block should be a Para with Emph content
+        mid = result['blocks'][1]
+        assert mid['t'] == 'Para'
+        assert any(i.get('t') == 'Emph' for i in mid['c'])
+
+    def test_backward_compat_default_config(self):
+        """Default config (all off) should not alter behavior."""
+        adapter = MarkoToPandocAdapter()
+        md = "::: {.cell}\n[text](url){.class}\n:::\n\n<style>.x{}</style>"
+        result = adapter.parse(md)
+        # Fenced divs become paragraphs with ::: text or are parsed by Marko
+        # The key point: no error and blocks are produced
+        assert len(result['blocks']) >= 1
+
+    def test_combined_quarto_preprocessing(self):
+        """Test all preprocessing features together on realistic Quarto output."""
+        from md2hwpx.config import ConversionConfig
+        config = ConversionConfig()
+        config.enable_quarto_defaults()
+        adapter = MarkoToPandocAdapter(config=config)
+
+        md = """\
+::: {.cell execution_count="1"}
+``` {.python .cell-code}
+import pandas as pd
+df = pd.read_csv("data.csv")
+```
+:::
+
+The result is $x_i = 2$.
+
+::: {.cell-output-display}
+
+| A | B |
+|---|---|
+| 1 | 2 |
+
+:::
+
+See [Section 1](#sec-intro){.quarto-xref} for details.
+
+<style scoped>
+.dataframe { color: red; }
+</style>
+
+$$
+Y = \\beta_0 + \\beta_1 X
+$$
+"""
+        result = adapter.parse(md)
+        types = [b['t'] for b in result['blocks']]
+
+        # Code block should be stripped
+        assert 'CodeBlock' not in types
+        # Table should survive
+        assert 'Table' in types
+        # Should have paragraphs (including math blocks)
+        assert 'Para' in types

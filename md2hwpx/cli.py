@@ -79,6 +79,22 @@ def main():
                              "Format: LEVEL:MM, e.g. --space-before-header 2:10,3:5. "
                              "Overrides --blank-lines-before-header for the same level.")
 
+    # Quarto/Pandoc preprocessing
+    quarto_group = parser.add_argument_group('Quarto/Pandoc preprocessing')
+    quarto_group.add_argument("--strip-quarto", action="store_true", default=False,
+                              help="Enable all Quarto GFM preprocessing (fenced divs, attributes, "
+                                   "style blocks, cell-code blocks, math as italic)")
+    quarto_group.add_argument("--strip-fenced-divs", action="store_true", default=False,
+                              help="Remove Pandoc fenced div markers (::: lines)")
+    quarto_group.add_argument("--strip-pandoc-attributes", action="store_true", default=False,
+                              help="Remove Pandoc inline attributes ({.class #id})")
+    quarto_group.add_argument("--strip-html-style", action="store_true", default=False,
+                              help="Remove <style>...</style> blocks")
+    quarto_group.add_argument("--strip-cell-code", action="store_true", default=False,
+                              help="Remove code blocks with .cell-code class")
+    quarto_group.add_argument("--math", choices=['none', 'italic'], default=None,
+                              help="LaTeX math handling: 'none' (skip), 'italic' (render as italic text)")
+
     args = parser.parse_args()
 
     # Set up logging
@@ -117,16 +133,6 @@ def main():
         else:
             logger.error("--reference-doc is required and no default 'blank.hwpx' found in package.")
             sys.exit(1)
-
-    # Parse Markdown with front matter
-    metadata, md_content = parse_markdown_with_frontmatter(input_file)
-
-    # Convert to Pandoc-like AST using Marko adapter
-    adapter = MarkoToPandocAdapter()
-    ast = adapter.parse(md_content)
-
-    # Inject metadata into AST
-    ast['meta'] = convert_metadata_to_pandoc_meta(metadata)
 
     # Build config: load file first, then apply individual CLI flags (which override file)
     if args.config:
@@ -182,6 +188,30 @@ def main():
                         logger.warning("--space-before-header: invalid value %r, skipped", part)
         if pairs:
             config.SPACE_BEFORE_HEADER_MM = pairs
+
+    # Quarto/Pandoc preprocessing flags
+    if args.strip_quarto:
+        config.enable_quarto_defaults()
+    if args.strip_fenced_divs:
+        config.STRIP_FENCED_DIVS = True
+    if args.strip_pandoc_attributes:
+        config.STRIP_PANDOC_ATTRIBUTES = True
+    if args.strip_html_style:
+        config.STRIP_HTML_STYLE_BLOCKS = True
+    if args.strip_cell_code:
+        config.STRIP_CELL_CODE_BLOCKS = True
+    if args.math is not None:
+        config.MATH_HANDLING = args.math
+
+    # Parse Markdown with front matter
+    metadata, md_content = parse_markdown_with_frontmatter(input_file)
+
+    # Convert to Pandoc-like AST using Marko adapter
+    adapter = MarkoToPandocAdapter(config=config)
+    ast = adapter.parse(md_content)
+
+    # Inject metadata into AST
+    ast['meta'] = convert_metadata_to_pandoc_meta(metadata)
 
     try:
         if output_ext == ".hwpx":
