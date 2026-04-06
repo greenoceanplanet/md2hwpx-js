@@ -2771,13 +2771,13 @@ class MarkdownToHwpx:
         else:
             return self._create_text_run_elem(latex, char_pr_id)
 
-    # Equation sizing reference (from equation_sample.hwpx, 10pt / charPr height=1000):
-    #   Display: baseLine=67-71, sz height=2100 (standalone equation paragraph)
-    #   Inline: sized to fit within line spacing to avoid disrupting layout
-    # baseLine is an absolute offset (not proportional to height).
-    # 71 HWPUNIT matches the reference and aligns well with text.
+    # Equation sizing reference (from "inline equation samples.hwpx"):
+    #   baseLine ≈ 86 — nearly constant across all font sizes (86-89)
+    #   baseUnit = charPr height (font size: 10pt=1000, 21pt=2100)
+    #   height ≈ baseUnit for simple expressions, slightly more for complex
+    #   width scales proportionally with baseUnit
     _EQ_REF_FONT_HEIGHT = 1000  # charPr height for 10pt reference
-    _EQ_REF_BASELINE = 71       # baseLine at 10pt reference
+    _EQ_BASELINE = 86           # fixed baseLine (from Hancom samples)
 
     def _get_font_height_from_char_pr(self, char_pr_id):
         """Look up font height from a charPr element in header.xml.
@@ -2850,41 +2850,37 @@ class MarkdownToHwpx:
                               is_block: bool, char_pr_id=0):
         """Create a native HWPX equation element (<hp:equation>).
 
-        Dynamically sizes equation to fit the paragraph's line spacing.
-        Reads font height from charPr and line spacing from the current paraPr
-        to compute correct height and baseLine values.
+        Sizing follows Hancom Office's own equation rendering rules
+        (verified from "inline equation samples.hwpx"):
+          - baseLine ≈ 86 (fixed, independent of font size)
+          - baseUnit = font_height (charPr height)
+          - height ≈ font_height for simple inline, scaled for complex
+          - width scales with font_height / 1000
         """
         import xml.sax.saxutils as sax
         safe_script = sax.escape(script)
 
-        # Get font size and line height from current context
+        # Get font size from current character properties
         font_height = self._get_font_height_from_char_pr(char_pr_id)
         scale = font_height / self._EQ_REF_FONT_HEIGHT
-
-        # Get current paragraph's line height
-        current_para_pr = getattr(self, '_current_para_pr_id', self.normal_para_pr_id)
-        line_height = self._get_line_height_from_para_pr(current_para_pr, font_height)
 
         if is_block:
             # Display equation: use full estimated size (scaled)
             eq_height = int(height * scale)
             eq_width = int(width * scale)
         else:
-            # Inline equation: base height on font size, not line height
-            # complexity=1.0 for simple vars (est height 2100), >1 for fractions etc.
-            complexity = height / 2100
-            # Simple vars (complexity=1): match font height
-            # Complex (fractions): grow proportionally, up to line_height
+            # Inline equation: height ≈ font_height for simple expressions
+            # Reference: 10pt simple → h=975 (≈font_height), complex → h=1170
+            complexity = height / 2100  # 1.0 for simple, >1 for fractions etc.
             eq_height = int(font_height * complexity)
-            eq_height = max(eq_height, int(font_height * 0.9))  # at least ~font size
-            eq_height = min(eq_height, line_height)  # never exceed line height
+            eq_height = max(eq_height, int(font_height * 0.9))
             eq_width = int(width * scale)
 
-        # baseLine: absolute offset scaled with font size (not proportional to eq height)
-        eq_baseline = max(1, int(self._EQ_REF_BASELINE * scale))
+        # baseLine: fixed absolute value (Hancom uses ~86 for all font sizes)
+        eq_baseline = self._EQ_BASELINE
 
-        # baseUnit controls equation *internal* font size (1000 = 10pt)
-        scaled_base_unit = str(int(1000 * scale))
+        # baseUnit = font_height (10pt→1000, 21pt→2100, etc.)
+        scaled_base_unit = str(font_height)
 
         run = self._create_run_elem(char_pr_id)
 
