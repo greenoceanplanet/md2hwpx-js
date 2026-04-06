@@ -229,6 +229,127 @@ class LatexToHancomConverter:
         return s
 
 
+def _count_visual_width(script: str) -> int:
+    """Count visual width of a Hancom equation script in HWPUNIT.
+
+    Multi-character commands (e.g. 'rarrow', 'alpha', 'rm{text}') render
+    as single symbols, so raw len() overestimates width. This function
+    tokenizes the script and assigns width per visual element.
+    """
+    # Known commands that render as a single symbol
+    # Sorted by length (longest first) for greedy matching
+    _SINGLE_SYMBOL_CMDS = sorted([
+        # Arrows
+        'lrarrow', 'Lrarrow', 'rarrow', 'larrow', 'Rarrow', 'Larrow',
+        'uarrow', 'darrow',
+        # Greek
+        'varepsilon', 'varsigma', 'vartheta', 'upsilon', 'Upsilon',
+        'epsilon', 'varphi', 'varpi', 'varrho', 'lambda', 'Lambda',
+        'partial', 'parallel',
+        'alpha', 'beta', 'gamma', 'Gamma', 'delta', 'Delta',
+        'theta', 'Theta', 'kappa', 'sigma', 'Sigma', 'omega', 'Omega',
+        'iota', 'zeta', 'eta', 'xi', 'Xi', 'pi', 'Pi', 'mu', 'nu',
+        'rho', 'tau', 'phi', 'Phi', 'chi', 'psi', 'Psi',
+        # Operators / relations / misc
+        'times', 'cdot', 'cdots', 'ldots', 'vdots', 'ddots',
+        'approx', 'equiv', 'simeq', 'propto', 'perp',
+        'leq', 'geq', 'neq', 'll', 'gg', 'sim',
+        'subset', 'supset', 'subseteq', 'supseteq',
+        'union', 'inter', 'emptyset', 'notin',
+        'forall', 'exists', 'therefore', 'because',
+        'land', 'lor', 'lnot',
+        'nabla', 'hbar', 'ell', 'aleph', 'prime',
+        'inf', 'div',
+        'langle', 'rangle', 'lfloor', 'rfloor', 'lceil', 'rceil',
+        'lbrace', 'rbrace',
+    ], key=len, reverse=True)
+
+    # Width per visual element (HWPUNIT)
+    CHAR_W = 350       # single letter/digit/symbol
+    SYMBOL_W = 450     # rendered command symbol (arrow, Greek, etc.)
+    SPACE_W = 150      # whitespace
+    OP_W = 300         # operators: +, -, =, <, >, etc.
+
+    i = 0
+    total_w = 0
+    n = len(script)
+
+    while i < n:
+        ch = script[i]
+
+        # Skip whitespace
+        if ch == ' ':
+            total_w += SPACE_W
+            i += 1
+            continue
+
+        # Check for known commands (greedy match)
+        matched = False
+        for cmd in _SINGLE_SYMBOL_CMDS:
+            if script[i:i+len(cmd)] == cmd:
+                end = i + len(cmd)
+                if end >= n or not script[end].isalpha():
+                    total_w += SYMBOL_W
+                    i = end
+                    matched = True
+                    break
+        if matched:
+            continue
+
+        # rm{...}, it{...}, bf{...} etc. — font wrappers
+        # CJK characters are full-width (~1.8x)
+        font_match = re.match(r'(rm|it|bf|sf|frak|cal|Bbb)\{([^}]*)\}', script[i:])
+        if font_match:
+            inner = font_match.group(2)
+            for c in inner:
+                if '\u3000' <= c <= '\u9fff' or '\uac00' <= c <= '\ud7af':
+                    total_w += int(CHAR_W * 1.8)  # CJK / Korean full-width
+                else:
+                    total_w += CHAR_W
+            i += font_match.end()
+            continue
+
+        # Structural keywords (affect layout, not direct character width)
+        struct_match = re.match(
+            r'(widehat|widetilde|overline|underline|overbrace|underbrace|'
+            r'bigcup|bigcap|'
+            r'sqrt|over|sum|prod|oint|iiint|iint|int|lim|'
+            r'from|to|left|right|hat|tilde|bar|vec|dot|ddot)',
+            script[i:]
+        )
+        if struct_match:
+            kw = struct_match.group(1)
+            i += len(kw)
+            if kw in ('sum', 'prod', 'int', 'iint', 'iiint', 'oint', 'lim'):
+                total_w += SYMBOL_W
+            elif kw in ('left', 'right'):
+                total_w += int(CHAR_W * 0.6)  # bracket
+            elif kw == 'sqrt':
+                total_w += int(CHAR_W * 0.5)  # radical sign
+            # over, from, to, decorations: no extra horizontal width
+            continue
+
+        # Operators
+        if ch in '+-=<>!':
+            total_w += OP_W
+            i += 1
+            continue
+
+        # Braces / subscript / superscript markers — structural
+        if ch in '{}_^':
+            i += 1
+            continue
+
+        # Regular character (CJK-aware)
+        if '\u3000' <= ch <= '\u9fff' or '\uac00' <= ch <= '\ud7af':
+            total_w += int(CHAR_W * 1.8)
+        else:
+            total_w += CHAR_W
+        i += 1
+
+    return max(total_w, 700)
+
+
 def estimate_equation_size(script: str) -> tuple[int, int]:
     """Estimate equation dimensions in HWPUNIT based on script complexity.
 
@@ -238,8 +359,7 @@ def estimate_equation_size(script: str) -> tuple[int, int]:
 
     Returns (width, height).
     """
-    # Base: ~200 HWPUNIT per character width, 2100 default height (matches reference)
-    base_w = len(script) * 200
+    base_w = _count_visual_width(script)
     h = 2100
 
     if 'over' in script or 'sqrt' in script:
