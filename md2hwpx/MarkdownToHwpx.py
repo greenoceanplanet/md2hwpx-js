@@ -2819,6 +2819,8 @@ class MarkdownToHwpx:
         scaled_baseline = str(int(self._EQ_REF_BASELINE * scale))
         scaled_width = str(int(width * scale))
         scaled_height = str(int(height * scale))
+        # baseUnit controls equation *internal* font size (1000 = 10pt)
+        scaled_base_unit = str(int(1000 * scale))
 
         run = self._create_run_elem(char_pr_id)
 
@@ -2829,7 +2831,7 @@ class MarkdownToHwpx:
             'version': 'Equation Version 60',
             'baseLine': scaled_baseline,
             'textColor': '#000000',
-            'baseUnit': '1000',
+            'baseUnit': scaled_base_unit,
             'lineMode': 'CHAR',
             'font': 'HancomEQN',
         })
