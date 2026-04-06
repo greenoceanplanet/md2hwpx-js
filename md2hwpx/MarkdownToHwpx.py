@@ -1222,18 +1222,18 @@ class MarkdownToHwpx:
                 # Pre-block hook: spacing before header (only when not first block)
                 if self._has_emitted_block:
                     level = b_content[0] if b_content else 0
-                    _, blank_lines, space_mm = self._get_header_pre_break_info(level)
-                    if space_mm:
-                        height = int(space_mm * self.config.LUNIT_PER_MM)
-                        para_pr_id = self._get_fixed_height_para_pr(height)
-                        spacer = self._create_para_elem(
-                            style_id=self.normal_style_id,
-                            para_pr_id=int(para_pr_id)
-                        )
-                        spacer.append(self._create_text_run_elem(" "))
-                        result.append(self._elem_to_str(spacer))
-                    else:
-                        for _ in range(blank_lines):
+                    _, blank_lines, line_height_mm = self._get_header_pre_break_info(level)
+                    for _ in range(blank_lines):
+                        if line_height_mm:
+                            height = int(line_height_mm * self.config.LUNIT_PER_MM)
+                            para_pr_id = self._get_fixed_height_para_pr(height)
+                            spacer = self._create_para_elem(
+                                style_id=self.normal_style_id,
+                                para_pr_id=int(para_pr_id)
+                            )
+                            spacer.append(self._create_text_run_elem(" "))
+                            result.append(self._elem_to_str(spacer))
+                        else:
                             result.append(self._make_empty_para())
                 result.append(self._handle_header(b_content))
             else:
@@ -1315,10 +1315,10 @@ class MarkdownToHwpx:
         """Determine page break and blank space settings for a header level.
 
         Returns:
-            tuple of (page_break: bool, blank_lines: int, space_mm: float or None)
+            tuple of (page_break: bool, blank_lines: int, line_height_mm: float or None)
             - page_break: True if a page break should be inserted
-            - blank_lines: number of blank paragraphs to insert (0 if page_break or space_mm)
-            - space_mm: mm-height of a single spacer paragraph (None if not set)
+            - blank_lines: number of blank paragraphs to insert (0 if page_break)
+            - line_height_mm: height of each blank paragraph in mm (None = default height)
         """
         # Page break decision
         if self.config.PAGE_BREAK_BEFORE_HEADER_LEVELS is not None:
@@ -1329,23 +1329,30 @@ class MarkdownToHwpx:
         if page_break:
             return True, 0, None
 
-        # mm-height spacer (higher priority than blank line count)
+        # SPACE_BEFORE_HEADER_MM: shorthand for [1, mm] — single fixed-height spacer
         if self.config.SPACE_BEFORE_HEADER_MM is not None:
             mm = self.config.SPACE_BEFORE_HEADER_MM.get(level)
             if mm:
-                return False, 0, float(mm)
+                return False, 1, float(mm)
 
-        # Blank line count
+        # BLANK_LINES_BEFORE_HEADER: count or [count, height_mm]
         if self.config.BLANK_LINES_BEFORE_HEADER is not None:
-            blank_lines = max(0, min(2, int(self.config.BLANK_LINES_BEFORE_HEADER.get(level, 0))))
+            spec = self.config.BLANK_LINES_BEFORE_HEADER.get(level, 0)
+            if isinstance(spec, (list, tuple)) and len(spec) >= 2:
+                blank_lines = max(0, min(2, int(spec[0])))
+                line_height_mm = float(spec[1]) if spec[1] else None
+            else:
+                blank_lines = max(0, min(2, int(spec)))
+                line_height_mm = None
         else:
             if (self.config.BLANK_LINE_BEFORE_HEADER
                     and level in self.config.BLANK_LINE_BEFORE_HEADER_LEVELS):
                 blank_lines = 1
             else:
                 blank_lines = 0
+            line_height_mm = None
 
-        return False, blank_lines, None
+        return False, blank_lines, line_height_mm
 
     def _get_fixed_height_para_pr(self, height_hwpunit):
         """Create or retrieve a paraPr with fixed line spacing for spacer paragraphs.

@@ -10,10 +10,11 @@
 
 - **Pandoc 없이 변환**: Marko 파서 + XML 생성으로 순수 파이썬 변환
 - **CLI 및 Python API** 제공
-- **LaTeX 수식 지원**: `$...$`, `$$...$$` → 네이티브 한컴 수식 객체 (HWCE) 변환
-- **Quarto/Pandoc 전처리**: `--strip-quarto`로 Quarto GFM 출력 정리
 - **YAML 프론트매터** 지원: 문서 `title` 메타데이터 작성
 - **템플릿 기반 스타일**: 제목/본문/리스트/표 셀 플레이스홀더로 WYSIWYG 스타일링
+- **이미지 prefix 지원**: 플레이스홀더 앞에 이미지를 배치하는 템플릿 스타일 자동 반영
+- **헤더 앞 공백/페이지브레이크**: 레벨별 빈줄 수·높이·페이지브레이크 설정
+- **설정 파일 지원**: JSON/YAML 설정 파일로 변환 옵션 일괄 관리
 - **표 지원**: GFM 표, 정렬 및 컬럼 비율 반영
 - **리스트**: 중첩 목록과 시작 번호 지원
 - **이미지 임베딩**: 로컬 이미지 삽입, 크기 보정, 경로 검증
@@ -68,8 +69,11 @@ md2hwpx input.md -o output.html
 | `input_file` | 입력 마크다운 파일 (.md, .markdown) |
 | `-o`, `--output` | 출력 파일 (.hwpx, .json, .html) |
 | `-r`, `--reference-doc` | 스타일/페이지 설정용 참조 HWPX (기본: 내장 blank.hwpx) |
-| `--math` | 수식 처리 모드: `hwce` (기본, 네이티브 수식), `italic`, `none` |
-| `--strip-quarto` | Quarto GFM 전처리 전체 활성화 |
+| `--config FILE` | JSON/YAML 설정 파일 경로 (snake_case 키) |
+| `--page-break-before LEVELS` | 지정 레벨 헤더 앞에 페이지브레이크 삽입. 예: `1,2` |
+| `--blank-lines-before-header SPEC` | 레벨별 빈줄 수. 예: `2:2,3:1` |
+| `--space-before-header SPEC` | 레벨별 정밀 공백 높이(mm). 예: `2:10,3:5` |
+| `--blank-line-before-header` | H1–H3 앞에 빈줄 삽입 (레거시, 단순 on/off) |
 | `--verbose` | 디버그 로그 출력 |
 | `-q`, `--quiet` | 오류 외 출력 억제 |
 | `-v`, `--version` | 버전 출력 |
@@ -89,18 +93,73 @@ title: 문서 제목
 ### Python API
 
 ```python
-from md2hwpx import MarkdownToHwpx, MarkoToPandocAdapter
+from md2hwpx import convert_string
 
-adapter = MarkoToPandocAdapter()
-ast = adapter.parse("# Hello World\n\nThis is a paragraph.")
+# 기본 변환
+convert_string("# 안녕하세요\n\n내용입니다.", "output.hwpx")
 
-MarkdownToHwpx.convert_to_hwpx(
-    input_path="input.md",
-    output_path="output.hwpx",
-    reference_path="blank.hwpx",
-    json_ast=ast,
-)
+# 커스텀 템플릿
+convert_string("# 안녕하세요\n\n내용입니다.", "output.hwpx", reference_doc="template.hwpx")
+
+# ConversionConfig로 세부 설정
+from md2hwpx.config import ConversionConfig
+
+config = ConversionConfig()
+config.PAGE_BREAK_BEFORE_HEADER_LEVELS = {1: True}
+config.BLANK_LINES_BEFORE_HEADER = {2: [2, 5.0], 3: 1}  # H2 앞: 5mm 빈줄 2개, H3 앞: 기본 빈줄 1개
+
+convert_string("# H1\n\n## H2\n\n본문", "output.hwpx", config=config)
 ```
+
+## 헤더 앞 공백 / 페이지브레이크 설정
+
+헤더(H1–H6) 앞에 빈줄이나 페이지브레이크를 레벨별로 지정할 수 있습니다.
+
+### CLI로 지정
+
+```bash
+# H1 앞 페이지브레이크
+md2hwpx input.md -o output.hwpx --page-break-before 1
+
+# H2 앞 10mm 공백, H3 앞 5mm 공백
+md2hwpx input.md -o output.hwpx --space-before-header 2:10,3:5
+
+# H2 앞 빈줄 2개, H3 앞 빈줄 1개
+md2hwpx input.md -o output.hwpx --blank-lines-before-header 2:2,3:1
+```
+
+### 설정 파일로 지정 (JSON/YAML)
+
+```yaml
+# config.yaml
+page_break_before_header_levels:
+  1: true
+blank_lines_before_header:
+  2: [2, 5.0]   # H2 앞: 5mm 높이 빈줄 2개
+  3: [1, 3.0]   # H3 앞: 3mm 높이 빈줄 1개
+  4: 1          # H4 앞: 기본 높이 빈줄 1개
+space_before_header_mm:
+  2: 10.0       # H2 앞: 10mm 공백 (blank_lines보다 우선)
+```
+
+```bash
+md2hwpx input.md -o output.hwpx --config config.yaml
+```
+
+JSON 형식도 지원합니다:
+
+```json
+{
+  "page_break_before_header_levels": {"1": true},
+  "blank_lines_before_header": {"2": [2, 5.0], "3": 1}
+}
+```
+
+### 우선순위
+
+`--page-break-before` > `--space-before-header` > `--blank-lines-before-header` > `--blank-line-before-header` (레거시)
+
+> **참고**: 문서의 첫 번째 블록이 헤더인 경우, 위 설정은 적용되지 않습니다.
 
 ## 스타일 커스터마이징 (템플릿)
 
@@ -127,6 +186,12 @@ MarkdownToHwpx.convert_to_hwpx(
 
 플레이스홀더 앞 텍스트는 접두(prefix)로 사용됩니다(예: `1. `, `가. `).
 템플릿 단락에 번호 매기기를 지정하면 해당 번호 스타일을 유지합니다.
+
+#### 이미지 prefix 플레이스홀더
+
+플레이스홀더 앞에 이미지(`hp:pic`)를 배치하면 변환 결과에도 해당 이미지가 prefix로 반영됩니다.
+예: 체크박스 이미지를 `{{LIST_BULLET_1}}` 앞에 삽입하면, 모든 1레벨 목록 항목 앞에 해당 이미지가 붙습니다.
+이미지는 템플릿의 BinData에서 출력 파일로 자동 복사됩니다.
 
 #### 표 셀 플레이스홀더
 
@@ -168,7 +233,6 @@ md2hwpx input.md --reference-doc=my_template.hwpx -o output.hwpx
 | 인용문 | 지원 (중첩) |
 | 수평선 | 지원 |
 | 각주 | 지원 |
-| LaTeX 수식 (인라인/블록) | 지원 (네이티브 한컴 수식) |
 | 위첨자 / 아래첨자 | AST에 있으면 출력 지원 |
 
 ## 보안 및 제한 사항
@@ -194,13 +258,15 @@ md2hwpx test.md -o output.hwpx --verbose
 
 원본 포크 이후 주요 변경 사항:
 
-- LaTeX 수식 → 네이티브 한컴 수식(HWCE) 변환 (`$...$`, `$$...$$`)
-- Quarto/Pandoc GFM 전처리 파이프라인
 - 헤더/리스트/표 셀 플레이스홀더 기반 스타일
 - GFM 표 정렬 및 컬럼 비율 처리
 - 프론트매터 메타데이터(title) 반영
 - 리스트 시작 번호 및 템플릿 번호 매기기 개선
 - 보안 제한(파일 크기, 이미지 개수, 경로 검증)
+- 이미지 prefix 플레이스홀더 지원 (체크박스 등 이미지를 헤더/리스트 앞에 자동 반영)
+- 헤더 앞 공백/페이지브레이크 레벨별 설정 (`--page-break-before`, `--space-before-header`, `--blank-lines-before-header`)
+- 빈줄 높이(mm) 지정 지원 (`blank_lines_before_header: {2: [2, 5.0]}`)
+- JSON/YAML 설정 파일 지원 (`--config`), Python API에서도 `ConversionConfig` 직접 전달 가능
 
 ## 라이선스
 

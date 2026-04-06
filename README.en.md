@@ -10,10 +10,11 @@
 
 - **Pandoc-free conversion**: Pure Python pipeline using Marko + XML generation
 - **CLI and Python API**: Use `md2hwpx` or import the converter classes
-- **LaTeX math support**: `$...$` and `$$...$$` → native Hancom equation objects (HWCE)
-- **Quarto/Pandoc preprocessing**: `--strip-quarto` cleans Quarto GFM output
 - **YAML front matter**: Supports metadata; document `title` is written into HWPX
 - **Template-driven styling**: WYSIWYG placeholders for headings, body text, lists, and table cells
+- **Image prefix support**: Images placed before placeholders (e.g., checkboxes) are preserved in output
+- **Per-level header spacing**: Configure blank lines (with custom height) and page breaks per header level
+- **Config file support**: JSON/YAML config files for batch-setting conversion options
 - **Tables**: GFM tables with alignment and proportional column widths
 - **Lists**: Nested bullet/ordered lists, custom start numbers
 - **Images**: Local image embedding, size normalization, and safe path validation
@@ -68,8 +69,11 @@ md2hwpx input.md -o output.html
 | `input_file` | Input Markdown file (.md, .markdown) |
 | `-o`, `--output` | Output file (.hwpx, .json, .html) |
 | `-r`, `--reference-doc` | Reference HWPX for styles and page setup (default: built-in blank.hwpx) |
-| `--math` | Math handling mode: `hwce` (default, native equations), `italic`, `none` |
-| `--strip-quarto` | Enable all Quarto GFM preprocessing |
+| `--config FILE` | Path to JSON or YAML config file (snake_case keys) |
+| `--page-break-before LEVELS` | Insert page break before the specified header levels, e.g. `1,2` |
+| `--blank-lines-before-header SPEC` | Blank lines before headers per level, e.g. `2:2,3:1` |
+| `--space-before-header SPEC` | Precise spacing (mm) before headers per level, e.g. `2:10,3:5` |
+| `--blank-line-before-header` | Insert a blank line before H1–H3 (legacy on/off toggle) |
 | `--verbose` | Show detailed debug output |
 | `-q`, `--quiet` | Suppress all non-error output |
 | `-v`, `--version` | Show version number |
@@ -89,18 +93,66 @@ The `title` is written into the HWPX document metadata.
 ### Python API
 
 ```python
-from md2hwpx import MarkdownToHwpx, MarkoToPandocAdapter
+from md2hwpx import convert_string
 
-adapter = MarkoToPandocAdapter()
-ast = adapter.parse("# Hello World\n\nThis is a paragraph.")
+# Basic conversion
+convert_string("# Hello World\n\nThis is a paragraph.", "output.hwpx")
 
-MarkdownToHwpx.convert_to_hwpx(
-    input_path="input.md",
-    output_path="output.hwpx",
-    reference_path="blank.hwpx",
-    json_ast=ast,
-)
+# With a custom template
+convert_string("# Hello\n\nWorld", "output.hwpx", reference_doc="template.hwpx")
+
+# With ConversionConfig for fine-grained control
+from md2hwpx.config import ConversionConfig
+
+config = ConversionConfig()
+config.PAGE_BREAK_BEFORE_HEADER_LEVELS = {1: True}
+config.BLANK_LINES_BEFORE_HEADER = {2: [2, 5.0], 3: 1}  # H2: 2 blank lines at 5mm; H3: 1 default-height line
+
+convert_string("# H1\n\n## H2\n\nBody text", "output.hwpx", config=config)
 ```
+
+## Header Spacing & Page Breaks
+
+You can configure blank lines or page breaks before any header level (H1–H6).
+
+### Via CLI
+
+```bash
+# Page break before H1
+md2hwpx input.md -o output.hwpx --page-break-before 1
+
+# 10mm space before H2, 5mm before H3
+md2hwpx input.md -o output.hwpx --space-before-header 2:10,3:5
+
+# 2 blank lines before H2, 1 before H3
+md2hwpx input.md -o output.hwpx --blank-lines-before-header 2:2,3:1
+```
+
+### Via config file (JSON/YAML)
+
+```yaml
+# config.yaml
+page_break_before_header_levels:
+  1: true
+blank_lines_before_header:
+  2: [2, 5.0]   # H2: 2 blank lines, each 5mm tall
+  3: [1, 3.0]   # H3: 1 blank line, 3mm tall
+  4: 1          # H4: 1 blank line, default height
+space_before_header_mm:
+  2: 10.0       # H2: 10mm space (takes priority over blank_lines)
+```
+
+```bash
+md2hwpx input.md -o output.hwpx --config config.yaml
+```
+
+JSON format is also supported. Dictionary keys can be integers or digit strings (`"2"` is treated as `2`).
+
+### Priority order
+
+`--page-break-before` > `--space-before-header` > `--blank-lines-before-header` > `--blank-line-before-header` (legacy)
+
+> **Note**: Spacing is never inserted before the very first block in the document.
 
 ## Style Customization (Template)
 
@@ -127,6 +179,12 @@ Use placeholders for list styling (levels 1–7):
 
 Text before the placeholder can be used as a prefix (e.g., `1. `, `가. `).
 If your template paragraph uses numbering, md2hwpx preserves that numbering.
+
+#### Image prefix placeholders
+
+You can place an image (`hp:pic`) directly before a placeholder text in the template. md2hwpx will detect the image and reproduce it as a prefix in all matching output elements.
+
+For example: placing a checkbox image before `{{LIST_BULLET_1}}` will prepend that image to every level-1 list item in the output. Images are automatically copied from the template's BinData to the output file.
 
 #### Table cell placeholders
 
@@ -169,7 +227,6 @@ md2hwpx input.md --reference-doc=my_template.hwpx -o output.hwpx
 | Block quotes | Full (nested) |
 | Horizontal rules | Full |
 | Footnotes | Full |
-| LaTeX math (inline/block) | Full (native Hancom equations) |
 | Superscript / subscript | Supported in output if present in AST |
 
 ## Security & Limits
@@ -195,13 +252,15 @@ md2hwpx test.md -o output.hwpx --verbose
 
 Highlights since the original fork:
 
-- LaTeX math → native Hancom equations (HWCE) (`$...$`, `$$...$$`)
-- Quarto/Pandoc GFM preprocessing pipeline
 - Placeholder-based styles for headers, lists, and table cells
 - GFM tables with alignment and proportional column widths
 - Front matter metadata injection (title)
 - Enhanced list handling with custom starts and template numbering
 - Security limits (file size, image count, path validation)
+- Image prefix placeholder support (e.g., checkbox images before header/list placeholders)
+- Per-level header spacing: page breaks, blank line count, and precise mm height (`--page-break-before`, `--space-before-header`, `--blank-lines-before-header`)
+- `[count, height_mm]` format for `blank_lines_before_header` to control both count and height of blank lines
+- JSON/YAML config file support (`--config`); `ConversionConfig` can be passed directly in Python API
 
 ## License
 

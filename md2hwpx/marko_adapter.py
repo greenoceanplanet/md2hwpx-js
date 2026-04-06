@@ -360,6 +360,11 @@ class MarkoToPandocAdapter:
         """Walk a block's inlines and replace math placeholders with Image nodes."""
         if block.get('t') in ('Para', 'Plain'):
             block['c'] = self._replace_math_in_inlines(block['c'])
+        elif block.get('t') == 'Header':
+            # Header c = [level, attr, inlines]
+            content = block.get('c', [])
+            if len(content) >= 3 and isinstance(content[2], list):
+                content[2] = self._replace_math_in_inlines(content[2])
         elif block.get('t') in ('BulletList', 'OrderedList'):
             items = block.get('c', [])
             if block['t'] == 'OrderedList':

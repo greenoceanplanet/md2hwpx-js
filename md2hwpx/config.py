@@ -63,8 +63,9 @@ class ConversionConfig:
     # Per-level page break: {level: bool}, None = use PAGE_BREAK_BEFORE_H1 fallback
     PAGE_BREAK_BEFORE_HEADER_LEVELS: dict = None    # e.g. {1: True, 2: True}
 
-    # Per-level blank line count: {level: int 0-2}, None = use BLANK_LINE_BEFORE_HEADER fallback
-    BLANK_LINES_BEFORE_HEADER: dict = None          # e.g. {2: 2, 3: 1}
+    # Per-level blank lines: {level: count} or {level: [count, height_mm]}, None = fallback
+    # count: int 0-2. height_mm: float (each blank paragraph's height). Default = normal line height.
+    BLANK_LINES_BEFORE_HEADER: dict = None          # e.g. {2: 2} or {2: [2, 5.0]}
 
     # Per-level precise space height (mm): {level: float}, None = not set. Overrides BLANK_LINES_BEFORE_HEADER.
     SPACE_BEFORE_HEADER_MM: dict = None             # e.g. {2: 10.0, 3: 5.0}
