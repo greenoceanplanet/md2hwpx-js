@@ -2869,13 +2869,14 @@ class MarkdownToHwpx:
             eq_height = int(height * scale)
             eq_width = int(width * scale)
         else:
-            # Inline equation: fit within line height
-            # Complexity ratio from estimated height (base 2100 for simple)
+            # Inline equation: base height on font size, not line height
+            # complexity=1.0 for simple vars (est height 2100), >1 for fractions etc.
             complexity = height / 2100
-            # Scale to line height; simple (complexity=1) = line_height
-            eq_height = int(line_height * complexity)
+            # Simple vars (complexity=1): match font height
+            # Complex (fractions): grow proportionally, up to line_height
+            eq_height = int(font_height * complexity)
             eq_height = max(eq_height, int(font_height * 0.9))  # at least ~font size
-            eq_height = min(eq_height, int(line_height * 1.3))  # don't exceed line too much
+            eq_height = min(eq_height, line_height)  # never exceed line height
             eq_width = int(width * scale)
 
         # baseLine: proportional to equation height (matching reference ratio)
