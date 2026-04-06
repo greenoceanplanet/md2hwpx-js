@@ -10,6 +10,8 @@
 
 - **Pandoc-free conversion**: Pure Python pipeline using Marko + XML generation
 - **CLI and Python API**: Use `md2hwpx` or import the converter classes
+- **LaTeX math support**: `$...$` and `$$...$$` → native Hancom equation objects (HWCE)
+- **Quarto/Pandoc preprocessing**: `--strip-quarto` cleans Quarto GFM output
 - **YAML front matter**: Supports metadata; document `title` is written into HWPX
 - **Template-driven styling**: WYSIWYG placeholders for headings, body text, lists, and table cells
 - **Tables**: GFM tables with alignment and proportional column widths
@@ -66,6 +68,8 @@ md2hwpx input.md -o output.html
 | `input_file` | Input Markdown file (.md, .markdown) |
 | `-o`, `--output` | Output file (.hwpx, .json, .html) |
 | `-r`, `--reference-doc` | Reference HWPX for styles and page setup (default: built-in blank.hwpx) |
+| `--math` | Math handling mode: `hwce` (default, native equations), `italic`, `none` |
+| `--strip-quarto` | Enable all Quarto GFM preprocessing |
 | `--verbose` | Show detailed debug output |
 | `-q`, `--quiet` | Suppress all non-error output |
 | `-v`, `--version` | Show version number |
@@ -165,6 +169,7 @@ md2hwpx input.md --reference-doc=my_template.hwpx -o output.hwpx
 | Block quotes | Full (nested) |
 | Horizontal rules | Full |
 | Footnotes | Full |
+| LaTeX math (inline/block) | Full (native Hancom equations) |
 | Superscript / subscript | Supported in output if present in AST |
 
 ## Security & Limits
@@ -190,6 +195,8 @@ md2hwpx test.md -o output.hwpx --verbose
 
 Highlights since the original fork:
 
+- LaTeX math → native Hancom equations (HWCE) (`$...$`, `$$...$$`)
+- Quarto/Pandoc GFM preprocessing pipeline
 - Placeholder-based styles for headers, lists, and table cells
 - GFM tables with alignment and proportional column widths
 - Front matter metadata injection (title)

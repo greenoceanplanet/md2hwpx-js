@@ -26,7 +26,13 @@ class MarkoToPandocAdapter:
     PANDOC_ATTR_RE = re.compile(r'\{[#.][^}]*\}')
     BLOCK_MATH_RE = re.compile(r'\$\$[^$]+\$\$', re.DOTALL)
     INLINE_MATH_RE = re.compile(r'(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)')
-    BLOCK_MATH_DELIM_RE = re.compile(r'^\$\$\s*\n(.*?)\n\s*\$\$\s*$', re.MULTILINE | re.DOTALL)
+    # Match both multi-line $$\n...\n$$ and single-line $$...$$ block math
+    BLOCK_MATH_DELIM_RE = re.compile(
+        r'^\$\$\s*\n(.*?)\n\s*\$\$\s*$'   # multi-line: $$\n content \n$$
+        r'|'
+        r'^\$\$(.+?)\$\$\s*$',             # single-line: $$content$$
+        re.MULTILINE | re.DOTALL
+    )
 
     def __init__(self, config=None):
         from .config import DEFAULT_CONFIG
@@ -39,6 +45,7 @@ class MarkoToPandocAdapter:
         self.table_dash_counts = {}  # Store dash counts per table separator
         self.table_counter = 0  # Track table index during conversion
         self._math_blocks = {}  # Store block math placeholders
+        self._math_inlines = {}  # Store inline math placeholders (image mode)
 
     def _preprocess_extended_headers(self, markdown_text: str) -> str:
         """
@@ -153,23 +160,42 @@ class MarkoToPandocAdapter:
     def _preprocess_math(self, text: str) -> str:
         """Convert LaTeX math to internal representations.
 
-        Block math ($$...$$) becomes placeholder paragraphs restored after parsing.
-        Inline math ($...$) becomes italic text (*...*).
+        Modes (config.MATH_HANDLING):
+          - 'italic': Block → placeholder → italic Para. Inline → *emphasis*.
+          - 'image':  Block → placeholder → Image node. Inline → placeholder → Image node.
         """
         self._math_blocks = {}
-        counter = [0]
+        self._math_inlines = {}
+        block_counter = [0]
+        inline_counter = [0]
 
         def replace_block_math(match):
-            content = match.group(1).strip()
-            key = f"MATHBLOCK{counter[0]}MARKER"
+            # group(1) = multi-line match, group(2) = single-line match
+            content = (match.group(1) or match.group(2)).strip()
+            key = f"MATHBLOCK{block_counter[0]}MARKER"
             self._math_blocks[key] = content
-            counter[0] += 1
+            block_counter[0] += 1
             return f"\n\n{key}\n\n"
 
-        result = self.BLOCK_MATH_DELIM_RE.sub(replace_block_math, text)
-        # Inline math: strip delimiters and wrap in emphasis
-        result = self.INLINE_MATH_RE.sub(r'*\1*', result)
-        return result
+        if self.config.MATH_HANDLING == 'italic':
+            result = self.BLOCK_MATH_DELIM_RE.sub(replace_block_math, text)
+            result = self.INLINE_MATH_RE.sub(r'*\1*', result)
+            return result
+
+        elif self.config.MATH_HANDLING == 'hwce':
+            result = self.BLOCK_MATH_DELIM_RE.sub(replace_block_math, text)
+
+            def replace_inline_math(match):
+                content = match.group(1)
+                key = f"MATHINLINE{inline_counter[0]}MARKER"
+                self._math_inlines[key] = content
+                inline_counter[0] += 1
+                return key
+
+            result = self.INLINE_MATH_RE.sub(replace_inline_math, result)
+            return result
+
+        return text
 
     def _preprocess_strip_pandoc_attributes(self, text: str) -> str:
         """Remove Pandoc inline attributes ({.class #id}) while protecting math regions."""
@@ -228,6 +254,7 @@ class MarkoToPandocAdapter:
         self.table_dash_counts = {}
         self.table_counter = 0
         self._math_blocks = {}
+        self._math_inlines = {}
 
         processed_text = markdown_text
 
@@ -238,6 +265,9 @@ class MarkoToPandocAdapter:
             processed_text = self._preprocess_strip_fenced_divs(processed_text)
         if self.config.STRIP_HTML_STYLE_BLOCKS:
             processed_text = self._preprocess_strip_html_style(processed_text)
+        if getattr(self.config, 'QUARTO_FULL_PREPROCESS', False):
+            from .quarto_preprocessor import preprocess_quarto_full
+            processed_text = preprocess_quarto_full(processed_text)
         if self.config.MATH_HANDLING != 'none':
             processed_text = self._preprocess_math(processed_text)
         if self.config.STRIP_PANDOC_ATTRIBUTES:
@@ -262,6 +292,8 @@ class MarkoToPandocAdapter:
                 # Check if this is an extended header or math placeholder
                 block = self._restore_extended_header(block)
                 block = self._restore_math_block(block)
+                if self._math_inlines:
+                    block = self._restore_math_inlines(block)
                 blocks.append(block)
 
         return {
@@ -296,7 +328,7 @@ class MarkoToPandocAdapter:
         return block
 
     def _restore_math_block(self, block: dict) -> dict:
-        """Check if a block is a math placeholder and restore as italic paragraph."""
+        """Check if a block is a math placeholder and restore."""
         if block.get('t') != 'Para':
             return block
         inlines = block.get('c', [])
@@ -308,11 +340,100 @@ class MarkoToPandocAdapter:
         text = first.get('c', '')
         if text in self._math_blocks:
             content = self._math_blocks[text]
-            return {
-                "t": "Para",
-                "c": [{"t": "Emph", "c": self._convert_raw_text(content)}]
-            }
+            if self.config.MATH_HANDLING == 'hwce':
+                return {
+                    "t": "Para",
+                    "c": [{"t": "Image", "c": [
+                        ["", [], []],
+                        [{"t": "Str", "c": content}],
+                        [f"__math_block:{text}", ""]
+                    ]}]
+                }
+            else:
+                return {
+                    "t": "Para",
+                    "c": [{"t": "Emph", "c": self._convert_raw_text(content)}]
+                }
         return block
+
+    def _restore_math_inlines(self, block: dict) -> dict:
+        """Walk a block's inlines and replace math placeholders with Image nodes."""
+        if block.get('t') in ('Para', 'Plain'):
+            block['c'] = self._replace_math_in_inlines(block['c'])
+        elif block.get('t') in ('BulletList', 'OrderedList'):
+            items = block.get('c', [])
+            if block['t'] == 'OrderedList':
+                items = items[1] if len(items) > 1 else []
+            for item in items:
+                for sub_block in item:
+                    self._restore_math_inlines(sub_block)
+        elif block.get('t') == 'BlockQuote':
+            for sub_block in block.get('c', []):
+                self._restore_math_inlines(sub_block)
+        elif block.get('t') == 'Table':
+            # Walk table cells
+            content = block.get('c', [])
+            if len(content) >= 5:
+                # head rows
+                head = content[3]
+                if len(head) >= 2:
+                    for row in head[1]:
+                        for cell in row[1]:
+                            for cell_block in cell[4]:
+                                self._restore_math_inlines(cell_block)
+                # body rows
+                for body in content[4]:
+                    if len(body) >= 4:
+                        for row in body[3]:
+                            for cell in row[1]:
+                                for cell_block in cell[4]:
+                                    self._restore_math_inlines(cell_block)
+        return block
+
+    def _replace_math_in_inlines(self, inlines: list) -> list:
+        """Replace MATHINLINE placeholders in an inline list with Image nodes."""
+        if not inlines:
+            return inlines
+        result = []
+        for item in inlines:
+            i_type = item.get('t')
+            if i_type == 'Str':
+                text = item.get('c', '')
+                # Check if the whole Str is a placeholder
+                if text in self._math_inlines:
+                    latex = self._math_inlines[text]
+                    result.append({"t": "Image", "c": [
+                        ["", [], []],
+                        [{"t": "Str", "c": latex}],
+                        [f"__math_inline:{text}", ""]
+                    ]})
+                elif any(k in text for k in self._math_inlines):
+                    # Placeholder embedded in larger text — split
+                    remaining = text
+                    for key, latex in self._math_inlines.items():
+                        if key in remaining:
+                            parts = remaining.split(key, 1)
+                            if parts[0]:
+                                result.extend(self._convert_raw_text_simple(parts[0]))
+                            result.append({"t": "Image", "c": [
+                                ["", [], []],
+                                [{"t": "Str", "c": latex}],
+                                [f"__math_inline:{key}", ""]
+                            ]})
+                            remaining = parts[1]
+                    if remaining:
+                        result.extend(self._convert_raw_text_simple(remaining))
+                else:
+                    result.append(item)
+            elif i_type in ('Strong', 'Emph', 'Underline', 'Strikeout'):
+                item['c'] = self._replace_math_in_inlines(item.get('c', []))
+                result.append(item)
+            elif i_type == 'Link':
+                item['c'][1] = self._replace_math_in_inlines(item['c'][1])
+                result.append(item)
+            else:
+                result.append(item)
+        return result
 
     def _convert_block(self, element) -> dict | None:
         """Convert a Marko block element to Pandoc dict format."""

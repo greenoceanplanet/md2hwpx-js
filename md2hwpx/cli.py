@@ -83,7 +83,7 @@ def main():
     quarto_group = parser.add_argument_group('Quarto/Pandoc preprocessing')
     quarto_group.add_argument("--strip-quarto", action="store_true", default=False,
                               help="Enable all Quarto GFM preprocessing (fenced divs, attributes, "
-                                   "style blocks, cell-code blocks, math as italic)")
+                                   "style blocks, cell-code blocks, math as native equation)")
     quarto_group.add_argument("--strip-fenced-divs", action="store_true", default=False,
                               help="Remove Pandoc fenced div markers (::: lines)")
     quarto_group.add_argument("--strip-pandoc-attributes", action="store_true", default=False,
@@ -92,8 +92,9 @@ def main():
                               help="Remove <style>...</style> blocks")
     quarto_group.add_argument("--strip-cell-code", action="store_true", default=False,
                               help="Remove code blocks with .cell-code class")
-    quarto_group.add_argument("--math", choices=['none', 'italic'], default=None,
-                              help="LaTeX math handling: 'none' (skip), 'italic' (render as italic text)")
+    quarto_group.add_argument("--math", choices=['none', 'italic', 'hwce'], default=None,
+                              help="LaTeX math handling: 'none' (skip), 'italic' (render as italic text), "
+                                   "'hwce' (native Hancom equation object)")
 
     args = parser.parse_args()
 

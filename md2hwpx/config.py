@@ -87,7 +87,8 @@ class ConversionConfig:
     STRIP_PANDOC_ATTRIBUTES: bool = False     # Remove {.class #id} from inline elements
     STRIP_HTML_STYLE_BLOCKS: bool = False     # Remove <style>...</style> blocks
     STRIP_CELL_CODE_BLOCKS: bool = False      # Remove ``` {.python .cell-code} blocks
-    MATH_HANDLING: str = 'none'              # 'none' | 'italic'
+    QUARTO_FULL_PREPROCESS: bool = False      # Full Quarto HTML preprocessing (xrefs, cites, divs, bib)
+    MATH_HANDLING: str = 'hwce'              # 'none' | 'italic' | 'hwce'
 
     def enable_quarto_defaults(self):
         """Enable all Quarto-related preprocessing with sensible defaults."""
@@ -95,7 +96,8 @@ class ConversionConfig:
         self.STRIP_PANDOC_ATTRIBUTES = True
         self.STRIP_HTML_STYLE_BLOCKS = True
         self.STRIP_CELL_CODE_BLOCKS = True
-        self.MATH_HANDLING = 'italic'
+        self.QUARTO_FULL_PREPROCESS = True
+        self.MATH_HANDLING = 'hwce'
 
     # === Security Limits ===
     MAX_INPUT_FILE_SIZE = 50 * 1024 * 1024  # 50 MB max input file

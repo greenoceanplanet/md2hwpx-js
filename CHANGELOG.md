@@ -4,6 +4,28 @@ All notable changes to md2hwpx will be documented in this file.
 
 Forked from pypandoc-hwpx: https://github.com/msjang/pypandoc-hwpx
 
+## [Unreleased]
+
+### Added
+- **Native LaTeX math support (HWCE)**: `$...$` inline and `$$...$$` block math converted to native Hancom equation objects (`<hp:equation>`)
+- LaTeX → Hancom equation script converter (`latex_to_hwce.py`): 70+ symbol mappings, 40+ structural rules, matrix/cases environments, font commands
+- Pluggable `MathRenderer` architecture with `HwceMathRenderer` implementation
+- `--math` CLI flag with modes: `hwce` (default), `italic`, `none`
+- **Quarto/Pandoc GFM preprocessing pipeline**: `--strip-quarto` enables all preprocessing
+- Individual preprocessing flags: `--strip-fenced-divs`, `--strip-pandoc-attributes`, `--strip-html-style`, `--strip-cell-code`
+- **Full Quarto HTML preprocessor** (`quarto_preprocessor.py`): cross-reference markers, citation markers, CSL bibliography extraction, div unwrapping, scoped style removal
+- **RawBlock handler**: HTML blocks now parsed — `<style>`/`<script>` skipped, `<table>` converted to native HWPX tables, other HTML text-extracted as paragraphs
+- **Improved RawInline handler**: `<sub>`→subscript, `<sup>`→superscript, `<a href>`→hyperlinks, Quarto marker rendering, fallback text extraction
+- **HTML table converter** (`html_table_converter.py`): parses HTML `<table>` elements from RawBlock into native HWPX tables with alignment support
+- Support for single-line block math (`$$...$$` on one line)
+- 46 tests for LaTeX→Hancom converter, 10 tests for math renderer
+- 42 tests for Quarto preprocessor, HTML table converter, RawBlock/RawInline handling
+
+### Changed
+- Default `MATH_HANDLING` set to `'hwce'` — math equations are converted by default
+- `enable_quarto_defaults()` now sets `MATH_HANDLING = 'hwce'`
+- RawBlock blocks no longer silently dropped — content is preserved as text or native elements
+
 ## [0.1.4] - 2026-03-25
 
 ### Added

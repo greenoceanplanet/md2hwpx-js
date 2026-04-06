@@ -10,6 +10,8 @@
 
 - **Pandoc 없이 변환**: Marko 파서 + XML 생성으로 순수 파이썬 변환
 - **CLI 및 Python API** 제공
+- **LaTeX 수식 지원**: `$...$`, `$$...$$` → 네이티브 한컴 수식 객체 (HWCE) 변환
+- **Quarto/Pandoc 전처리**: `--strip-quarto`로 Quarto GFM 출력 정리
 - **YAML 프론트매터** 지원: 문서 `title` 메타데이터 작성
 - **템플릿 기반 스타일**: 제목/본문/리스트/표 셀 플레이스홀더로 WYSIWYG 스타일링
 - **표 지원**: GFM 표, 정렬 및 컬럼 비율 반영
@@ -66,6 +68,8 @@ md2hwpx input.md -o output.html
 | `input_file` | 입력 마크다운 파일 (.md, .markdown) |
 | `-o`, `--output` | 출력 파일 (.hwpx, .json, .html) |
 | `-r`, `--reference-doc` | 스타일/페이지 설정용 참조 HWPX (기본: 내장 blank.hwpx) |
+| `--math` | 수식 처리 모드: `hwce` (기본, 네이티브 수식), `italic`, `none` |
+| `--strip-quarto` | Quarto GFM 전처리 전체 활성화 |
 | `--verbose` | 디버그 로그 출력 |
 | `-q`, `--quiet` | 오류 외 출력 억제 |
 | `-v`, `--version` | 버전 출력 |
@@ -164,6 +168,7 @@ md2hwpx input.md --reference-doc=my_template.hwpx -o output.hwpx
 | 인용문 | 지원 (중첩) |
 | 수평선 | 지원 |
 | 각주 | 지원 |
+| LaTeX 수식 (인라인/블록) | 지원 (네이티브 한컴 수식) |
 | 위첨자 / 아래첨자 | AST에 있으면 출력 지원 |
 
 ## 보안 및 제한 사항
@@ -189,6 +194,8 @@ md2hwpx test.md -o output.hwpx --verbose
 
 원본 포크 이후 주요 변경 사항:
 
+- LaTeX 수식 → 네이티브 한컴 수식(HWCE) 변환 (`$...$`, `$$...$$`)
+- Quarto/Pandoc GFM 전처리 파이프라인
 - 헤더/리스트/표 셀 플레이스홀더 기반 스타일
 - GFM 표 정렬 및 컬럼 비율 처리
 - 프론트매터 메타데이터(title) 반영

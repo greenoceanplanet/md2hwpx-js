@@ -245,6 +245,15 @@ class TestCLIQuartoFlags:
         result = run_cli(md_file, '-o', output, '--math', 'italic')
         assert result.returncode == 0
 
+    def test_math_hwce_flag(self, tmp_path):
+        md_file = str(tmp_path / "math_hwce.md")
+        with open(md_file, 'w', encoding='utf-8') as f:
+            f.write("The formula $E = mc^2$ is famous.\n\n$$\ny = mx + b\n$$\n")
+        output = str(tmp_path / "out.hwpx")
+        result = run_cli(md_file, '-o', output, '--math', 'hwce')
+        assert result.returncode == 0
+        assert os.path.exists(output)
+
 
 class TestEndToEnd:
     """End-to-end tests using the Python API directly."""

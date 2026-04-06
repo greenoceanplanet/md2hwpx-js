@@ -511,3 +511,61 @@ $$
         assert 'Table' in types
         # Should have paragraphs (including math blocks)
         assert 'Para' in types
+
+
+class TestMathHwceMode:
+    """Test math='hwce' mode produces Image AST nodes (used as math placeholders)."""
+
+    def _make_adapter(self, **kwargs):
+        from md2hwpx.config import ConversionConfig
+        config = ConversionConfig()
+        for k, v in kwargs.items():
+            setattr(config, k.upper(), v)
+        return MarkoToPandocAdapter(config=config)
+
+    def test_inline_math_becomes_image_node(self):
+        adapter = self._make_adapter(math_handling='hwce')
+        md = "The formula $E = mc^2$ is famous."
+        result = adapter.parse(md)
+        inlines = result['blocks'][0]['c']
+        images = [i for i in inlines if i.get('t') == 'Image']
+        assert len(images) == 1
+        assert images[0]['c'][2][0].startswith('__math_inline:')
+
+    def test_block_math_becomes_image_node(self):
+        adapter = self._make_adapter(math_handling='hwce')
+        md = "Text before\n\n$$\nE = mc^2\n$$\n\nText after"
+        result = adapter.parse(md)
+        mid = result['blocks'][1]
+        assert mid['t'] == 'Para'
+        images = [i for i in mid['c'] if i.get('t') == 'Image']
+        assert len(images) == 1
+        assert images[0]['c'][2][0].startswith('__math_block:')
+
+    def test_inline_math_preserves_latex_in_caption(self):
+        adapter = self._make_adapter(math_handling='hwce')
+        md = "Value $\\beta_1$ here."
+        result = adapter.parse(md)
+        inlines = result['blocks'][0]['c']
+        images = [i for i in inlines if i.get('t') == 'Image']
+        assert len(images) == 1
+        caption_text = images[0]['c'][1][0]['c']
+        assert '\\beta_1' in caption_text
+
+    def test_multiple_inline_math(self):
+        adapter = self._make_adapter(math_handling='hwce')
+        md = "Both $x$ and $y$ are variables."
+        result = adapter.parse(md)
+        inlines = result['blocks'][0]['c']
+        images = [i for i in inlines if i.get('t') == 'Image']
+        assert len(images) == 2
+
+    def test_hwce_mode_does_not_affect_normal_images(self):
+        adapter = self._make_adapter(math_handling='hwce')
+        md = "![alt](image.png)\n\nValue $x$ here."
+        result = adapter.parse(md)
+        blocks = result['blocks']
+        first_images = [i for i in blocks[0]['c'] if i.get('t') == 'Image']
+        assert first_images[0]['c'][2][0] == 'image.png'
+        second_images = [i for i in blocks[1]['c'] if i.get('t') == 'Image']
+        assert second_images[0]['c'][2][0].startswith('__math_inline:')

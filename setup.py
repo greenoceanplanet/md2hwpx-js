@@ -27,6 +27,7 @@ setup(
         "python-frontmatter>=1.0.0",
         "Pillow",
     ],
+    extras_require={},
     entry_points={
         'console_scripts': [
             'md2hwpx=md2hwpx.cli:main',

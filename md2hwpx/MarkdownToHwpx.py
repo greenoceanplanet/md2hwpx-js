@@ -15,6 +15,7 @@ from PIL import Image
 
 from .config import ConversionConfig, DEFAULT_CONFIG
 from .exceptions import TemplateError, ImageError, StyleError, ConversionError, SecurityError
+from .math_renderer import create_renderer
 
 logger = logging.getLogger('md2hwpx')
 
@@ -86,6 +87,9 @@ class MarkdownToHwpx:
 
         self.images = [] # metadata for images
 
+        # Math renderer (None if math handling is 'none' or 'italic')
+        self.math_renderer = create_renderer(self.config)
+
         # Block handler dispatch table (instance-level allows subclass/test overrides)
         self._block_handlers = {
             'Para':           self._handle_para,
@@ -96,6 +100,7 @@ class MarkdownToHwpx:
             'Table':          self._handle_table,
             'BlockQuote':     self._handle_blockquote,
             'HorizontalRule': lambda _: self._handle_horizontal_rule(),
+            'RawBlock':       self._handle_raw_block,
         }
 
         # Metadata extraction
@@ -452,14 +457,17 @@ class MarkdownToHwpx:
             MarkdownToHwpx._read_template(reference_path)
 
         # 3. Convert Logic (pass section_xml_content for placeholder detection)
-        converter = MarkdownToHwpx(json_ast, header_xml_content, section_xml_content, input_path)
-        xml_body, new_header_xml = converter.convert(page_setup_xml=page_setup_xml)
+        converter = MarkdownToHwpx(json_ast, header_xml_content, section_xml_content, input_path, config=config)
+        try:
+            xml_body, new_header_xml = converter.convert(page_setup_xml=page_setup_xml)
 
-        # 4. Write Output
-        MarkdownToHwpx._write_hwpx_output(
-            output_path, ref_doc_bytes, xml_body, new_header_xml,
-            converter.images, converter.title, input_path
-        )
+            # 4. Write Output
+            MarkdownToHwpx._write_hwpx_output(
+                output_path, ref_doc_bytes, xml_body, new_header_xml,
+                converter.images, converter.title, input_path
+            )
+        finally:
+            converter._cleanup()
 
         logger.info("Successfully created %s", output_path)
 
@@ -1694,6 +1702,154 @@ class MarkdownToHwpx:
         para.append(run)
         return self._elem_to_str(para)
 
+    # --- RawBlock Handler ---
+
+    # Regex patterns for extracting content from HTML raw blocks
+    _RAW_TABLE_RE = re.compile(r'<table[\s>]', re.IGNORECASE)
+    _RAW_STYLE_RE = re.compile(r'^\s*<style[\s>]', re.IGNORECASE)
+    _RAW_SCRIPT_RE = re.compile(r'^\s*<script[\s>]', re.IGNORECASE)
+    _RAW_COMMENT_RE = re.compile(r'^\s*<!--.*?-->\s*$', re.DOTALL)
+
+    def _handle_raw_block(self, content):
+        """Handle RawBlock (HTML blocks that Marko couldn't parse as Markdown).
+
+        Strategy:
+        - <style>, <script>, <!-- comments --> → silently skip
+        - <table> → route to HTML table converter (Phase 3)
+        - Other HTML → extract text content, render as paragraph
+        """
+        if not isinstance(content, list) or len(content) < 2:
+            return ''
+
+        fmt = content[0]  # usually 'html'
+        html_text = content[1]
+
+        if not html_text or not html_text.strip():
+            return ''
+
+        # Skip style blocks, scripts, and comments
+        if self._RAW_STYLE_RE.match(html_text):
+            logger.debug("RawBlock: skipping <style> block")
+            return ''
+        if self._RAW_SCRIPT_RE.match(html_text):
+            logger.debug("RawBlock: skipping <script> block")
+            return ''
+        if self._RAW_COMMENT_RE.match(html_text):
+            logger.debug("RawBlock: skipping HTML comment")
+            return ''
+
+        # HTML table → delegate to HTML table converter
+        if self._RAW_TABLE_RE.search(html_text):
+            try:
+                from .html_table_converter import convert_html_table
+                return convert_html_table(html_text, self)
+            except ImportError:
+                logger.debug("RawBlock: HTML table found but html_table_converter not available")
+            except Exception as e:
+                logger.warning("RawBlock: HTML table conversion failed: %s", e)
+
+        # Fallback: extract text from HTML and render as paragraph(s)
+        text = self._extract_text_from_html(html_text)
+        if not text.strip():
+            return ''
+
+        # Split into paragraphs on double newlines
+        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
+        results = []
+        for para_text in paragraphs:
+            # Check for Quarto markers in extracted text
+            inlines = self._text_to_inlines(para_text)
+            para = self._create_para_elem(
+                style_id=self.normal_style_id,
+                para_pr_id=self.normal_para_pr_id
+            )
+            self._process_inlines_to_elems(inlines, para, base_char_pr_id=0)
+            results.append(self._elem_to_str(para))
+
+        return '\n'.join(results)
+
+    def _extract_text_from_html(self, html_text):
+        """Extract plain text from HTML, preserving paragraph breaks."""
+        from html.parser import HTMLParser
+
+        class _TextExtractor(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.parts = []
+                self._skip_depth = 0
+                self._skip_tags = {'style', 'script'}
+                self._block_tags = {'p', 'div', 'br', 'tr', 'li', 'h1', 'h2', 'h3',
+                                    'h4', 'h5', 'h6', 'blockquote', 'figcaption'}
+
+            def handle_starttag(self, tag, attrs):
+                if tag in self._skip_tags:
+                    self._skip_depth += 1
+                elif tag in self._block_tags and self.parts and self.parts[-1] != '\n':
+                    self.parts.append('\n')
+
+            def handle_endtag(self, tag):
+                if tag in self._skip_tags and self._skip_depth > 0:
+                    self._skip_depth -= 1
+                elif tag in self._block_tags and self.parts and self.parts[-1] != '\n':
+                    self.parts.append('\n')
+
+            def handle_data(self, data):
+                if self._skip_depth == 0:
+                    self.parts.append(data)
+
+        extractor = _TextExtractor()
+        try:
+            extractor.feed(html_text)
+        except Exception:
+            # Fallback: regex strip
+            return re.sub(r'<[^>]+>', ' ', html_text)
+        return ''.join(extractor.parts).strip()
+
+    def _text_to_inlines(self, text):
+        """Convert plain text (possibly with Quarto markers) to inline AST nodes."""
+        # Pattern for Quarto markers: {{type:id:display text}}
+        marker_re = re.compile(r'\{\{(xref|cite|bib):([^:}]+):([^}]+)\}\}')
+
+        inlines = []
+        last_end = 0
+        for m in marker_re.finditer(text):
+            # Text before marker
+            before = text[last_end:m.start()]
+            if before:
+                self._append_text_inlines(inlines, before)
+
+            marker_type = m.group(1)
+            marker_id = m.group(2)
+            display = m.group(3)
+
+            if marker_type == 'xref':
+                # Cross-reference: render as link text (for now, Phase 2 upgrades to CROSSREF)
+                inlines.append({'t': 'Str', 'c': display})
+            elif marker_type == 'cite':
+                # Citation: render as parenthesized text
+                inlines.append({'t': 'Str', 'c': f'({display})'})
+            elif marker_type == 'bib':
+                # Bibliography entry
+                inlines.append({'t': 'Str', 'c': display})
+
+            last_end = m.end()
+
+        # Remaining text
+        remaining = text[last_end:]
+        if remaining:
+            self._append_text_inlines(inlines, remaining)
+
+        return inlines
+
+    def _append_text_inlines(self, inlines, text):
+        """Split text into Str and Space inline nodes."""
+        words = text.split(' ')
+        for i, word in enumerate(words):
+            if word:
+                inlines.append({'t': 'Str', 'c': word})
+            if i < len(words) - 1:
+                inlines.append({'t': 'Space'})
+
     _PANDOC_ALIGN_MAP = {
         'AlignLeft': 'LEFT',
         'AlignCenter': 'CENTER',
@@ -2262,8 +2418,16 @@ class MarkdownToHwpx:
                 parent_elem.append(run)
 
             elif i_type == 'Image':
-                img_elem = self._handle_image_elem(i_content, char_pr_id=get_current_id())
-                parent_elem.append(img_elem)
+                target = i_content[2][0] if i_content and len(i_content) > 2 else ''
+                if target.startswith('__math_inline:') or target.startswith('__math_block:'):
+                    # Math: extract LaTeX from caption, dispatch to renderer
+                    latex = self._get_plain_text(i_content[1]) if i_content[1] else ''
+                    is_block = target.startswith('__math_block:')
+                    math_elem = self._handle_math_dispatch(latex, is_block, char_pr_id=get_current_id())
+                    parent_elem.append(math_elem)
+                else:
+                    img_elem = self._handle_image_elem(i_content, char_pr_id=get_current_id())
+                    parent_elem.append(img_elem)
 
             elif i_type == 'SoftBreak':
                 run = self._create_text_run_elem(" ", char_pr_id=get_current_id())
@@ -2274,12 +2438,65 @@ class MarkdownToHwpx:
                 parent_elem.append(run)
 
             elif i_type == 'RawInline':
-                # Handle HTML <br> tags as line breaks
                 if isinstance(i_content, list) and len(i_content) >= 2:
-                    html_content = i_content[1].strip().lower()
-                    if html_content in ('<br>', '<br/>', '<br />'):
+                    html_content = i_content[1].strip()
+                    html_lower = html_content.lower()
+
+                    # <br> → line break
+                    if html_lower in ('<br>', '<br/>', '<br />'):
                         run = self._create_linebreak_run_elem(char_pr_id=get_current_id())
                         parent_elem.append(run)
+
+                    # <sub>text</sub> → subscript
+                    elif html_lower.startswith('<sub') and '</sub>' in html_lower:
+                        inner = re.sub(r'</?sub[^>]*>', '', html_content)
+                        if inner:
+                            new_formats = active_formats.copy()
+                            new_formats.add('SUBSCRIPT')
+                            sub_inlines = self._text_to_inlines(inner)
+                            self._process_inlines_to_elems(sub_inlines, parent_elem,
+                                                           base_char_pr_id, new_formats)
+
+                    # <sup>text</sup> → superscript
+                    elif html_lower.startswith('<sup') and '</sup>' in html_lower:
+                        inner = re.sub(r'</?sup[^>]*>', '', html_content)
+                        if inner:
+                            new_formats = active_formats.copy()
+                            new_formats.add('SUPERSCRIPT')
+                            sup_inlines = self._text_to_inlines(inner)
+                            self._process_inlines_to_elems(sup_inlines, parent_elem,
+                                                           base_char_pr_id, new_formats)
+
+                    # <a href="url">text</a> → hyperlink
+                    elif html_lower.startswith('<a ') and '</a>' in html_lower:
+                        href_match = re.search(r'href=["\']([^"\']*)["\']', html_content)
+                        link_text = re.sub(r'<[^>]+>', '', html_content).strip()
+                        if href_match and link_text:
+                            url = href_match.group(1)
+                            parent_elem.append(self._create_field_begin_elem(url))
+                            new_formats = active_formats.copy()
+                            new_formats.add('UNDERLINE')
+                            new_formats.add('COLOR_BLUE')
+                            link_inlines = self._text_to_inlines(link_text)
+                            self._process_inlines_to_elems(link_inlines, parent_elem,
+                                                           base_char_pr_id, new_formats)
+                            parent_elem.append(self._create_field_end_elem())
+                        elif link_text:
+                            run = self._create_text_run_elem(link_text, char_pr_id=get_current_id())
+                            parent_elem.append(run)
+
+                    # Quarto markers: {{xref:id:text}}, {{cite:key:text}}, {{bib:id:text}}
+                    elif '{{' in html_content and '}}' in html_content:
+                        marker_inlines = self._text_to_inlines(html_content)
+                        self._process_inlines_to_elems(marker_inlines, parent_elem,
+                                                       base_char_pr_id, active_formats)
+
+                    # Other HTML: extract text content as fallback
+                    else:
+                        text = re.sub(r'<[^>]+>', '', html_content).strip()
+                        if text:
+                            run = self._create_text_run_elem(text, char_pr_id=get_current_id())
+                            parent_elem.append(run)
 
     def _parse_dimension(self, val_str):
         if not val_str:
@@ -2523,6 +2740,77 @@ class MarkdownToHwpx:
         self._add_elem(pic, NS_PARA, 'shapeComment')
 
         return run
+
+    def _handle_math_dispatch(self, latex: str, is_block: bool, char_pr_id=0):
+        """Route math to the HWCE renderer."""
+        if not self.math_renderer:
+            return self._create_text_run_elem(latex, char_pr_id)
+
+        if is_block:
+            result = self.math_renderer.render_block(latex)
+        else:
+            result = self.math_renderer.render_inline(latex)
+
+        if result.kind == 'hwce':
+            return self._handle_hwce_equation(
+                result.data['script'], result.data['width'], result.data['height'],
+                result.data.get('is_block', is_block), char_pr_id)
+        else:
+            return self._create_text_run_elem(latex, char_pr_id)
+
+    def _handle_hwce_equation(self, script: str, width: int, height: int,
+                              is_block: bool, char_pr_id=0):
+        """Create a native HWPX equation element (<hp:equation>).
+
+        Matches the structure produced by Hancom Office's equation editor,
+        including required attributes like version, baseLine, font, etc.
+        """
+        import xml.sax.saxutils as sax
+        safe_script = sax.escape(script)
+
+        # baseLine is approximately 71% of height (matches Hancom's default)
+        base_line = str(int(height * 0.71))
+
+        run = self._create_run_elem(char_pr_id)
+
+        eq = self._add_elem(run, NS_PARA, 'equation', {
+            'id': '', 'zOrder': '0', 'numberingType': 'EQUATION',
+            'textWrap': 'TOP_AND_BOTTOM', 'textFlow': 'BOTH_SIDES',
+            'lock': '0', 'dropcapstyle': 'None',
+            'version': 'Equation Version 60',
+            'baseLine': base_line,
+            'textColor': '#000000',
+            'baseUnit': '1000',
+            'lineMode': 'CHAR',
+            'font': 'HancomEQN',
+        })
+
+        self._add_elem(eq, NS_PARA, 'sz', {
+            'width': str(width), 'widthRelTo': 'ABSOLUTE',
+            'height': str(height), 'heightRelTo': 'ABSOLUTE',
+            'protect': '0',
+        })
+        self._add_elem(eq, NS_PARA, 'pos', {
+            'treatAsChar': '1', 'affectLSpacing': '0', 'flowWithText': '1',
+            'allowOverlap': '0', 'holdAnchorAndSO': '0',
+            'vertRelTo': 'PARA', 'horzRelTo': 'PARA',
+            'vertAlign': 'TOP', 'horzAlign': 'LEFT',
+            'vertOffset': '0', 'horzOffset': '0',
+        })
+        self._add_elem(eq, NS_PARA, 'outMargin', {
+            'left': '56', 'right': '56', 'top': '0', 'bottom': '0',
+        })
+        comment = self._add_elem(eq, NS_PARA, 'shapeComment')
+        comment.text = '\uc218\uc2dd\uc785\ub2c8\ub2e4.'  # 수식입니다.
+        script_elem = self._add_elem(eq, NS_PARA, 'script')
+        script_elem.text = safe_script
+
+        return run
+
+    def _cleanup(self):
+        """Clean up temporary resources (math renderer temp files, etc.)."""
+        if self.math_renderer:
+            self.math_renderer.cleanup()
 
     def _create_field_begin_elem(self, url):
         """Create field begin element for hyperlink (ElementTree version)."""

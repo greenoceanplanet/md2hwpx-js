@@ -49,7 +49,11 @@ md2hwpx/
 │   ├── MarkdownToHwpx.py      # Core HWPX conversion engine
 │   ├── MarkdownToHtml.py      # HTML conversion (for debugging)
 │   ├── marko_adapter.py       # Marko AST to Pandoc-like format adapter
+│   ├── math_renderer.py       # Math rendering: MathRenderer ABC + HwceMathRenderer
+│   ├── latex_to_hwce.py       # LaTeX → Hancom equation script converter
 │   ├── frontmatter_parser.py  # YAML frontmatter parsing
+│   ├── quarto_preprocessor.py  # Quarto HTML preprocessing (xrefs, citations, bib, divs)
+│   ├── html_table_converter.py # HTML table → HWPX native table converter
 │   ├── config.py              # Configuration constants (ConversionConfig)
 │   ├── exceptions.py          # Custom exception hierarchy
 │   └── blank.hwpx             # Default reference template
@@ -63,6 +67,9 @@ md2hwpx/
 │   ├── test_api.py            # Library API tests
 │   ├── test_cli.py            # CLI integration tests
 │   ├── test_converter.py      # Core converter tests
+│   ├── test_latex_to_hwce.py  # LaTeX to Hancom equation converter tests
+│   ├── test_math_renderer.py  # Math renderer tests
+│   ├── test_preprocessor.py   # Quarto preprocessor, HTML table, RawBlock/RawInline tests
 │   └── test_security.py       # Security validation tests
 ├── CLAUDE.md                  # This file (Claude Code guide)
 ├── README.md                  # User documentation (Korean)
@@ -76,9 +83,13 @@ md2hwpx/
 |------|---------|
 | `md2hwpx/MarkdownToHwpx.py` | Core HWPX conversion engine |
 | `md2hwpx/marko_adapter.py` | Converts Marko AST to Pandoc-like dict format |
+| `md2hwpx/math_renderer.py` | Pluggable math rendering (MathRenderer ABC, HwceMathRenderer) |
+| `md2hwpx/latex_to_hwce.py` | LaTeX → Hancom equation script converter (70+ symbols, structural rules) |
 | `md2hwpx/converter_api.py` | Library API (`convert_string()`) |
 | `md2hwpx/config.py` | All configuration constants (`ConversionConfig`) |
 | `md2hwpx/exceptions.py` | Custom exception hierarchy |
+| `md2hwpx/quarto_preprocessor.py` | Quarto HTML preprocessing (xrefs, citations, bib, div unwrap) |
+| `md2hwpx/html_table_converter.py` | HTML `<table>` → HWPX native table converter |
 | `md2hwpx/frontmatter_parser.py` | Parses YAML frontmatter metadata |
 | `md2hwpx/cli.py` | CLI argument parsing and orchestration |
 | `md2hwpx/blank.hwpx` | Default template with styles |
@@ -111,12 +122,13 @@ md2hwpx/
 ### Conversion Pipeline
 
 1. `marko` parses Markdown into an AST
-2. `marko_adapter.py` converts Marko AST to Pandoc-like dict format (with preprocessing for extended headers and table dash counts)
+2. `marko_adapter.py` converts Marko AST to Pandoc-like dict format (with preprocessing for extended headers, table dash counts, Quarto cleanup, and math extraction)
 3. Reference HWPX (ZIP) provides styles from `header.xml` and page setup from `section0.xml`
 4. Template placeholders (e.g., `{{H1}}`, `{{BODY}}`) are extracted for style mapping
 5. AST blocks (paragraphs, headers, tables, lists) mapped to HWPX XML
-6. Images extracted and embedded into HWPX `BinData/` directory
-7. Output ZIP created with all components
+6. Math expressions rendered via `HwceMathRenderer` → native `<hp:equation>` elements
+7. Images extracted and embedded into HWPX `BinData/` directory
+8. Output ZIP created with all components
 
 ## HWPX Format Basics
 
@@ -207,6 +219,8 @@ Dashes: 8 : 21 : 8 → proportional widths: 22% : 57% : 22% of total table width
 - Image size limits
 - Block quote indentation
 - Link styling
+- Math handling (`MATH_HANDLING`: `'hwce'` default, `'italic'`, or `'none'`)
+- Quarto/Pandoc preprocessing toggles
 - Security limits (file size, nesting depth, image count)
 
 Override via `DEFAULT_CONFIG` or pass a custom `ConversionConfig` instance.
@@ -252,10 +266,12 @@ The adapter (`marko_adapter.py`) converts Marko AST to Pandoc-like dict format:
 Preprocessing steps (run before Marko parsing):
 1. `_preprocess_extended_headers()` — converts `#######`–`#########` to placeholders
 2. `_preprocess_table_dashes()` — extracts dash counts for proportional column widths
+3. `_preprocess_math()` — extracts `$...$` and `$$...$$` into placeholders, later restored as Image AST nodes with `__math_inline:`/`__math_block:` targets
+4. Quarto/Pandoc preprocessing — strips fenced divs, pandoc attributes, style blocks, cell-code blocks (when enabled)
 
 ## Testing
 
-Automated test suite with **142 tests** using pytest:
+Automated test suite with **299 tests** using pytest:
 
 ```bash
 # Run all tests
@@ -270,10 +286,13 @@ pytest tests/test_api.py -v
 
 | Module | Coverage |
 |--------|----------|
-| `test_adapter.py` | Marko adapter: AST conversion, extended headers, table dashes |
+| `test_adapter.py` | Marko adapter: AST conversion, extended headers, table dashes, Quarto preprocessing, math placeholders |
 | `test_api.py` | Library API: `convert_string()`, frontmatter, templates |
-| `test_cli.py` | CLI: argument parsing, file validation, output formats |
+| `test_cli.py` | CLI: argument parsing, file validation, output formats, math flags |
 | `test_converter.py` | Core converter: all block types, styles, tables, lists, images |
+| `test_latex_to_hwce.py` | LaTeX→Hancom converter: symbols, structures, environments, decorations, fonts, complex expressions, size estimation |
+| `test_math_renderer.py` | Math renderer: HWCE renderer, factory, ABC contract |
+| `test_preprocessor.py` | Quarto preprocessor, HTML table converter, RawBlock/RawInline handling, marker rendering |
 | `test_security.py` | Security: path traversal, size limits, nesting depth, image count |
 
 ## Common Tasks
@@ -304,10 +323,82 @@ pytest tests/test_api.py -v
 3. Run with `--verbose` flag for debug logging
 4. Add logging in specific handler methods
 
+### Math/Equation Support
+
+LaTeX math expressions are converted to native Hancom equation objects (`<hp:equation>`):
+
+- **Inline math**: `$E = mc^2$` → inline equation in text flow
+- **Block math**: `$$\frac{a}{b}$$` → standalone equation paragraph
+- Both single-line (`$$...$$`) and multi-line (`$$\n...\n$$`) block math supported
+- `--math` flag controls mode: `hwce` (default), `italic`, or `none`
+- `--strip-quarto` enables Quarto GFM preprocessing + HWCE math
+
+#### LaTeX → Hancom Script Conversion
+
+`latex_to_hwce.py` converts LaTeX to Hancom's proprietary equation script:
+- 70+ symbol mappings (Greek letters, operators, relations, arrows, etc.)
+- 40+ structural transformation rules (fractions, roots, limits, integrals)
+- Environment support (pmatrix, bmatrix, vmatrix, cases)
+- Font commands (\mathrm, \mathbf, \mathbb, \mathcal, \text)
+
+Example conversions:
+| LaTeX | Hancom Script |
+|-------|---------------|
+| `\frac{a}{b}` | `{a} over {b}` |
+| `\sqrt{x}` | `sqrt{x}` |
+| `\sum_{i=1}^{n}` | `sum from{i=1} to{n}` |
+| `\alpha + \beta` | `alpha + beta` |
+
+#### HWPX Equation XML Structure
+
+Equations are embedded as `<hp:equation>` elements with required attributes:
+- `version="Equation Version 60"`, `font="HancomEQN"`, `lineMode="CHAR"`
+- `baseLine` set to ~71% of height for proper text alignment
+- `treatAsChar="1"` for inline rendering
+- `<hp:script>` contains the Hancom equation script
+
+### Quarto/Pandoc Preprocessing
+
+For Quarto `.qmd` → GFM → HWPX pipelines, enable with `--strip-quarto` or individual flags:
+- `--strip-fenced-divs` — remove `:::` fenced div markers
+- `--strip-pandoc-attributes` — remove `{.class #id}` attributes
+- `--strip-html-style` — remove `<style>...</style>` blocks
+- `--strip-cell-code` — remove `.cell-code` code blocks
+
+When `--strip-quarto` is used, the full preprocessing pipeline (`quarto_preprocessor.py`) runs:
+1. Scoped `<style>` blocks removed
+2. Quarto cross-references → `{{xref:id:text}}` markers
+3. Quarto citations → `{{cite:key:text}}` markers
+4. CSL bibliography → `{{bib-start}}`/`{{bib:id:text}}`/`{{bib-end}}` markers
+5. Quarto div wrappers (`<figure>`, `<div id="tbl-X">`) unwrapped
+6. Remaining inline HTML (`<em>`, `<strong>`, `<a>`, `<span>`, `<code>`) → Markdown equivalents
+
+### RawBlock/RawInline Handling
+
+HTML blocks that Marko can't parse as Markdown become `RawBlock` nodes:
+- `<style>`, `<script>`, HTML comments → silently skipped
+- `<table>` → routed to `html_table_converter.py` for native HWPX table conversion
+- Other HTML → text extracted and rendered as paragraphs
+
+HTML inline elements become `RawInline` nodes:
+- `<br>` → line break
+- `<sub>text</sub>` → subscript character formatting
+- `<sup>text</sup>` → superscript character formatting
+- `<a href="url">text</a>` → HWPX HYPERLINK field
+- `{{xref:...}}`, `{{cite:...}}`, `{{bib:...}}` markers → text output
+- Other HTML → text extracted as fallback
+
+### HTML Table Converter
+
+`html_table_converter.py` converts HTML `<table>` elements into Pandoc-like AST format,
+then delegates to the existing `_handle_table()` method:
+- Parses `<thead>`/`<tbody>`, `<th>`/`<td>` cells
+- Extracts text-align from `style` attribute or `align` attribute
+- Supports tables with or without explicit `<thead>` (detects `<th>` cells)
+
 ## Known Limitations
 
 - Only Markdown input is supported (no DOCX, HTML, or JSON AST input)
 - Complex formatting (letter-spacing, precise styles) not supported
-- No colspan/rowspan in tables (GFM limitation)
-- No underline/superscript/subscript (not part of standard Markdown)
+- No colspan/rowspan in HTML tables (basic cell support only)
 - Tool focuses on content preservation over exact formatting
