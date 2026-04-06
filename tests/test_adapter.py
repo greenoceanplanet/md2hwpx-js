@@ -514,7 +514,7 @@ $$
 
 
 class TestMathHwceMode:
-    """Test math='hwce' mode produces Image AST nodes (used as math placeholders)."""
+    """Test math='hwce' mode produces Math AST nodes."""
 
     def _make_adapter(self, **kwargs):
         from md2hwpx.config import ConversionConfig
@@ -523,42 +523,43 @@ class TestMathHwceMode:
             setattr(config, k.upper(), v)
         return MarkoToPandocAdapter(config=config)
 
-    def test_inline_math_becomes_image_node(self):
+    def test_inline_math_becomes_math_node(self):
         adapter = self._make_adapter(math_handling='hwce')
         md = "The formula $E = mc^2$ is famous."
         result = adapter.parse(md)
         inlines = result['blocks'][0]['c']
-        images = [i for i in inlines if i.get('t') == 'Image']
-        assert len(images) == 1
-        assert images[0]['c'][2][0].startswith('__math_inline:')
+        maths = [i for i in inlines if i.get('t') == 'Math']
+        assert len(maths) == 1
+        assert maths[0]['c'][0] == 'InlineMath'
+        assert maths[0]['c'][1] == 'E = mc^2'
 
-    def test_block_math_becomes_image_node(self):
+    def test_block_math_becomes_display_math_node(self):
         adapter = self._make_adapter(math_handling='hwce')
         md = "Text before\n\n$$\nE = mc^2\n$$\n\nText after"
         result = adapter.parse(md)
         mid = result['blocks'][1]
         assert mid['t'] == 'Para'
-        images = [i for i in mid['c'] if i.get('t') == 'Image']
-        assert len(images) == 1
-        assert images[0]['c'][2][0].startswith('__math_block:')
+        maths = [i for i in mid['c'] if i.get('t') == 'Math']
+        assert len(maths) == 1
+        assert maths[0]['c'][0] == 'DisplayMath'
+        assert maths[0]['c'][1] == 'E = mc^2'
 
-    def test_inline_math_preserves_latex_in_caption(self):
+    def test_inline_math_preserves_latex(self):
         adapter = self._make_adapter(math_handling='hwce')
         md = "Value $\\beta_1$ here."
         result = adapter.parse(md)
         inlines = result['blocks'][0]['c']
-        images = [i for i in inlines if i.get('t') == 'Image']
-        assert len(images) == 1
-        caption_text = images[0]['c'][1][0]['c']
-        assert '\\beta_1' in caption_text
+        maths = [i for i in inlines if i.get('t') == 'Math']
+        assert len(maths) == 1
+        assert '\\beta_1' in maths[0]['c'][1]
 
     def test_multiple_inline_math(self):
         adapter = self._make_adapter(math_handling='hwce')
         md = "Both $x$ and $y$ are variables."
         result = adapter.parse(md)
         inlines = result['blocks'][0]['c']
-        images = [i for i in inlines if i.get('t') == 'Image']
-        assert len(images) == 2
+        maths = [i for i in inlines if i.get('t') == 'Math']
+        assert len(maths) == 2
 
     def test_hwce_mode_does_not_affect_normal_images(self):
         adapter = self._make_adapter(math_handling='hwce')
@@ -567,5 +568,17 @@ class TestMathHwceMode:
         blocks = result['blocks']
         first_images = [i for i in blocks[0]['c'] if i.get('t') == 'Image']
         assert first_images[0]['c'][2][0] == 'image.png'
-        second_images = [i for i in blocks[1]['c'] if i.get('t') == 'Image']
-        assert second_images[0]['c'][2][0].startswith('__math_inline:')
+        second_maths = [i for i in blocks[1]['c'] if i.get('t') == 'Math']
+        assert len(second_maths) == 1
+        assert second_maths[0]['c'][0] == 'InlineMath'
+
+    def test_math_in_header(self):
+        adapter = self._make_adapter(math_handling='hwce')
+        md = "### 종속변수 ($Y$)"
+        result = adapter.parse(md)
+        header = result['blocks'][0]
+        assert header['t'] == 'Header'
+        inlines = header['c'][2]
+        maths = [i for i in inlines if i.get('t') == 'Math']
+        assert len(maths) == 1
+        assert maths[0]['c'][1] == 'Y'

@@ -147,6 +147,9 @@ class MarkdownToHwpx:
             elif t == 'Image':
                  # c = [attr, [caption], [url, title]]
                  text.append(self._get_plain_text(c[1]))
+            elif t == 'Math':
+                 # c = ["InlineMath"/"DisplayMath", "latex"]
+                 text.append(c[1] if isinstance(c, list) and len(c) >= 2 else str(c))
             elif t == 'Code':
                  text.append(c[1])
             elif t == 'Quoted':
@@ -2424,17 +2427,17 @@ class MarkdownToHwpx:
                 run = self._create_text_run_elem(i_content[1], char_pr_id=get_current_id())
                 parent_elem.append(run)
 
+            elif i_type == 'Math':
+                # Math node: c = ["InlineMath"/"DisplayMath", "latex"]
+                math_type = i_content[0] if isinstance(i_content, list) and len(i_content) >= 2 else 'InlineMath'
+                latex = i_content[1] if isinstance(i_content, list) and len(i_content) >= 2 else str(i_content)
+                is_block = (math_type == 'DisplayMath')
+                math_elem = self._handle_math_dispatch(latex, is_block, char_pr_id=get_current_id())
+                parent_elem.append(math_elem)
+
             elif i_type == 'Image':
-                target = i_content[2][0] if i_content and len(i_content) > 2 else ''
-                if target.startswith('__math_inline:') or target.startswith('__math_block:'):
-                    # Math: extract LaTeX from caption, dispatch to renderer
-                    latex = self._get_plain_text(i_content[1]) if i_content[1] else ''
-                    is_block = target.startswith('__math_block:')
-                    math_elem = self._handle_math_dispatch(latex, is_block, char_pr_id=get_current_id())
-                    parent_elem.append(math_elem)
-                else:
-                    img_elem = self._handle_image_elem(i_content, char_pr_id=get_current_id())
-                    parent_elem.append(img_elem)
+                img_elem = self._handle_image_elem(i_content, char_pr_id=get_current_id())
+                parent_elem.append(img_elem)
 
             elif i_type == 'SoftBreak':
                 run = self._create_text_run_elem(" ", char_pr_id=get_current_id())

@@ -343,11 +343,7 @@ class MarkoToPandocAdapter:
             if self.config.MATH_HANDLING == 'hwce':
                 return {
                     "t": "Para",
-                    "c": [{"t": "Image", "c": [
-                        ["", [], []],
-                        [{"t": "Str", "c": content}],
-                        [f"__math_block:{text}", ""]
-                    ]}]
+                    "c": [{"t": "Math", "c": ["DisplayMath", content]}]
                 }
             else:
                 return {
@@ -357,7 +353,7 @@ class MarkoToPandocAdapter:
         return block
 
     def _restore_math_inlines(self, block: dict) -> dict:
-        """Walk a block's inlines and replace math placeholders with Image nodes."""
+        """Walk a block's inlines and replace math placeholders with Math nodes."""
         if block.get('t') in ('Para', 'Plain'):
             block['c'] = self._replace_math_in_inlines(block['c'])
         elif block.get('t') == 'Header':
@@ -396,7 +392,7 @@ class MarkoToPandocAdapter:
         return block
 
     def _replace_math_in_inlines(self, inlines: list) -> list:
-        """Replace MATHINLINE placeholders in an inline list with Image nodes."""
+        """Replace MATHINLINE placeholders in an inline list with Math nodes."""
         if not inlines:
             return inlines
         result = []
@@ -407,11 +403,7 @@ class MarkoToPandocAdapter:
                 # Check if the whole Str is a placeholder
                 if text in self._math_inlines:
                     latex = self._math_inlines[text]
-                    result.append({"t": "Image", "c": [
-                        ["", [], []],
-                        [{"t": "Str", "c": latex}],
-                        [f"__math_inline:{text}", ""]
-                    ]})
+                    result.append({"t": "Math", "c": ["InlineMath", latex]})
                 elif any(k in text for k in self._math_inlines):
                     # Placeholder embedded in larger text — split
                     remaining = text
@@ -420,11 +412,7 @@ class MarkoToPandocAdapter:
                             parts = remaining.split(key, 1)
                             if parts[0]:
                                 result.extend(self._convert_raw_text_simple(parts[0]))
-                            result.append({"t": "Image", "c": [
-                                ["", [], []],
-                                [{"t": "Str", "c": latex}],
-                                [f"__math_inline:{key}", ""]
-                            ]})
+                            result.append({"t": "Math", "c": ["InlineMath", latex]})
                             remaining = parts[1]
                     if remaining:
                         result.extend(self._convert_raw_text_simple(remaining))
