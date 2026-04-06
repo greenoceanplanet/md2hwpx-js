@@ -2768,6 +2768,11 @@ class MarkdownToHwpx:
         else:
             return self._create_text_run_elem(latex, char_pr_id)
 
+    # Equation baseLine: fixed value matching Hancom Office's default for 10pt text.
+    # This is NOT a ratio of height — it's an absolute value in the equation's
+    # coordinate system. Reference equation_sample.hwpx uses baseLine=71.
+    _EQ_BASELINE = '71'
+
     def _handle_hwce_equation(self, script: str, width: int, height: int,
                               is_block: bool, char_pr_id=0):
         """Create a native HWPX equation element (<hp:equation>).
@@ -2778,9 +2783,6 @@ class MarkdownToHwpx:
         import xml.sax.saxutils as sax
         safe_script = sax.escape(script)
 
-        # baseLine is approximately 71% of height (matches Hancom's default)
-        base_line = str(int(height * 0.71))
-
         run = self._create_run_elem(char_pr_id)
 
         eq = self._add_elem(run, NS_PARA, 'equation', {
@@ -2788,7 +2790,7 @@ class MarkdownToHwpx:
             'textWrap': 'TOP_AND_BOTTOM', 'textFlow': 'BOTH_SIDES',
             'lock': '0', 'dropcapstyle': 'None',
             'version': 'Equation Version 60',
-            'baseLine': base_line,
+            'baseLine': self._EQ_BASELINE,
             'textColor': '#000000',
             'baseUnit': '1000',
             'lineMode': 'CHAR',

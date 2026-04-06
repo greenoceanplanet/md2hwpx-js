@@ -232,27 +232,31 @@ class LatexToHancomConverter:
 def estimate_equation_size(script: str) -> tuple[int, int]:
     """Estimate equation dimensions in HWPUNIT based on script complexity.
 
-    Hancom Office auto-resizes equations with treatAsChar="1", so these
-    are rough estimates. Returns (width, height).
+    Hancom Office auto-resizes equations when treatAsChar="1", so these
+    are initial estimates. The editor will adjust the actual rendering size.
+    Reference: equation_sample.hwpx uses w=1775, h=2100 for simple variables.
+
+    Returns (width, height).
     """
-    base_w = len(script) * 150
-    h = 1500
+    # Base: ~200 HWPUNIT per character width, 2100 default height (matches reference)
+    base_w = len(script) * 200
+    h = 2100
 
     if 'over' in script or 'sqrt' in script:
-        h = 2500
+        h = 2800
         base_w = max(base_w, 3000)
     if 'matrix' in script or 'pmatrix' in script or 'bmatrix' in script or 'dmatrix' in script:
         base_w = max(base_w, 8000)
         row_count = script.count('##') + 1
-        h = 1500 * row_count
+        h = 2100 * row_count
     if 'cases' in script:
         row_count = script.count('##') + 1
-        h = 1500 * row_count
+        h = 2100 * row_count
         base_w = max(base_w, 6000)
     if 'sum' in script or 'int' in script or 'prod' in script:
-        h = max(h, 3000)
+        h = max(h, 3200)
     if 'from' in script or 'to' in script:
-        h = max(h, 2500)
+        h = max(h, 2800)
 
     width = max(base_w, 1500)
     width = min(width, 42000)  # Cap at ~page width
