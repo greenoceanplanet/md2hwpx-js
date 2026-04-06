@@ -2774,9 +2774,10 @@ class MarkdownToHwpx:
     # Equation sizing reference (from equation_sample.hwpx, 10pt / charPr height=1000):
     #   Display: baseLine=67-71, sz height=2100 (standalone equation paragraph)
     #   Inline: sized to fit within line spacing to avoid disrupting layout
-    # baseLine ratio from reference: 71/2100 ≈ 0.0338
+    # baseLine is an absolute offset (not proportional to height).
+    # 71 HWPUNIT matches the reference and aligns well with text.
     _EQ_REF_FONT_HEIGHT = 1000  # charPr height for 10pt reference
-    _EQ_BASELINE_RATIO = 71 / 2100  # baseLine as fraction of equation height
+    _EQ_REF_BASELINE = 71       # baseLine at 10pt reference
 
     def _get_font_height_from_char_pr(self, char_pr_id):
         """Look up font height from a charPr element in header.xml.
@@ -2879,8 +2880,8 @@ class MarkdownToHwpx:
             eq_height = min(eq_height, line_height)  # never exceed line height
             eq_width = int(width * scale)
 
-        # baseLine: proportional to equation height (matching reference ratio)
-        eq_baseline = max(1, int(eq_height * self._EQ_BASELINE_RATIO))
+        # baseLine: absolute offset scaled with font size (not proportional to eq height)
+        eq_baseline = max(1, int(self._EQ_REF_BASELINE * scale))
 
         # baseUnit controls equation *internal* font size (1000 = 10pt)
         scaled_base_unit = str(int(1000 * scale))
