@@ -264,11 +264,13 @@ def _count_visual_width(script: str) -> int:
         'lbrace', 'rbrace',
     ], key=len, reverse=True)
 
-    # Width per visual element (HWPUNIT)
-    CHAR_W = 350       # single letter/digit/symbol
-    SYMBOL_W = 450     # rendered command symbol (arrow, Greek, etc.)
-    SPACE_W = 150      # whitespace
-    OP_W = 300         # operators: +, -, =, <, >, etc.
+    # Width per visual element (HWPUNIT at 10pt / baseUnit=1000)
+    # Calibrated from "inline equation samples.hwpx":
+    #   X=750, x=600, "X rarrow Y"=2550
+    CHAR_W = 700       # single letter/digit/symbol
+    SYMBOL_W = 700     # rendered command symbol (arrow, Greek, etc.)
+    SPACE_W = 225      # whitespace between elements
+    OP_W = 500         # operators: +, -, =, <, >, etc.
 
     i = 0
     total_w = 0
@@ -297,13 +299,13 @@ def _count_visual_width(script: str) -> int:
             continue
 
         # rm{...}, it{...}, bf{...} etc. — font wrappers
-        # CJK characters are full-width (~1.8x)
+        # CJK characters are full-width (~1.4x Latin)
         font_match = re.match(r'(rm|it|bf|sf|frak|cal|Bbb)\{([^}]*)\}', script[i:])
         if font_match:
             inner = font_match.group(2)
             for c in inner:
                 if '\u3000' <= c <= '\u9fff' or '\uac00' <= c <= '\ud7af':
-                    total_w += int(CHAR_W * 1.8)  # CJK / Korean full-width
+                    total_w += int(CHAR_W * 1.4)  # CJK / Korean full-width
                 else:
                     total_w += CHAR_W
             i += font_match.end()
@@ -323,9 +325,9 @@ def _count_visual_width(script: str) -> int:
             if kw in ('sum', 'prod', 'int', 'iint', 'iiint', 'oint', 'lim'):
                 total_w += SYMBOL_W
             elif kw in ('left', 'right'):
-                total_w += int(CHAR_W * 0.6)  # bracket
+                total_w += int(CHAR_W * 0.5)  # bracket
             elif kw == 'sqrt':
-                total_w += int(CHAR_W * 0.5)  # radical sign
+                total_w += int(CHAR_W * 0.4)  # radical sign
             # over, from, to, decorations: no extra horizontal width
             continue
 
@@ -342,22 +344,22 @@ def _count_visual_width(script: str) -> int:
 
         # Regular character (CJK-aware)
         if '\u3000' <= ch <= '\u9fff' or '\uac00' <= ch <= '\ud7af':
-            total_w += int(CHAR_W * 1.8)
+            total_w += int(CHAR_W * 1.4)
         else:
             total_w += CHAR_W
         i += 1
 
-    return max(total_w, 700)
+    return max(total_w, 500)  # minimum ~single narrow char
 
 
 def estimate_equation_size(script: str) -> tuple[int, int]:
     """Estimate equation dimensions in HWPUNIT based on script complexity.
 
-    Hancom Office auto-resizes equations when treatAsChar="1", so these
-    are initial estimates. The editor will adjust the actual rendering size.
-    Reference: equation_sample.hwpx uses w=1775, h=2100 for simple variables.
+    Width is calibrated from "inline equation samples.hwpx" at 10pt:
+      x=600, X=750, "X rarrow Y"=2550.
+    Height defaults to 2100 (reference display), adjusted for structures.
 
-    Returns (width, height).
+    Returns (width, height) at 10pt reference scale.
     """
     base_w = _count_visual_width(script)
     h = 2100
@@ -378,6 +380,5 @@ def estimate_equation_size(script: str) -> tuple[int, int]:
     if 'from' in script or 'to' in script:
         h = max(h, 2800)
 
-    width = max(base_w, 1500)
-    width = min(width, 42000)  # Cap at ~page width
+    width = min(base_w, 42000)  # Cap at ~page width
     return width, h
