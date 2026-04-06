@@ -1463,6 +1463,7 @@ class MarkdownToHwpx:
 
         para = self._create_para_elem(style_id=style_id, para_pr_id=para_pr_id,
                                       column_break=column_break_val, page_break=page_break_val)
+        self._current_para_pr_id = para_pr_id
         self._process_inlines_to_elems(inlines, para, base_char_pr_id=int(char_pr_id))
         return self._elem_to_str(para)
 
@@ -1665,6 +1666,7 @@ class MarkdownToHwpx:
             para.append(prefix_run)
 
         # Add header content
+        self._current_para_pr_id = para_pr_id
         self._process_inlines_to_elems(inlines, para, base_char_pr_id=char_pr_id)
         return self._elem_to_str(para)
 
@@ -1693,6 +1695,7 @@ class MarkdownToHwpx:
                     char_pr_id = style_node.get('charPrIDRef', 0)
 
         para = self._create_para_elem(style_id=self.normal_style_id, para_pr_id=para_pr_id)
+        self._current_para_pr_id = para_pr_id
         self._process_inlines_to_elems(content, para, base_char_pr_id=int(char_pr_id))
         return self._elem_to_str(para)
 
@@ -2770,9 +2773,10 @@ class MarkdownToHwpx:
 
     # Equation sizing reference (from equation_sample.hwpx, 10pt / charPr height=1000):
     #   Display: baseLine=67-71, sz height=2100 (standalone equation paragraph)
-    #   Inline: should match text height to avoid disrupting line spacing
+    #   Inline: sized to fit within line spacing to avoid disrupting layout
+    # baseLine ratio from reference: 71/2100 ≈ 0.0338
     _EQ_REF_FONT_HEIGHT = 1000  # charPr height for 10pt reference
-    _EQ_REF_BASELINE = 71       # baseLine at 10pt
+    _EQ_BASELINE_RATIO = 71 / 2100  # baseLine as fraction of equation height
 
     def _get_font_height_from_char_pr(self, char_pr_id):
         """Look up font height from a charPr element in header.xml.
@@ -2801,36 +2805,81 @@ class MarkdownToHwpx:
 
         return self._EQ_REF_FONT_HEIGHT
 
+    def _get_line_height_from_para_pr(self, para_pr_id, font_height):
+        """Calculate the actual line height from a paraPr's lineSpacing.
+
+        Reads lineSpacing type and value from the paragraph properties.
+        Returns line height in the same units as font_height (HWPUNIT).
+        """
+        if self.header_root is None:
+            return int(font_height * 1.6)  # default ~160%
+
+        pp = self.header_root.find(
+            f'.//hh:paraPr[@id="{para_pr_id}"]', self.namespaces)
+        if pp is None:
+            pp = self.header_root.find(
+                f'.//hh:paraPr[@id="{self.normal_para_pr_id}"]', self.namespaces)
+        if pp is None:
+            return int(font_height * 1.6)
+
+        ls = pp.find('.//hh:lineSpacing', self.namespaces)
+        if ls is None:
+            return int(font_height * 1.6)
+
+        ls_type = ls.get('type', 'PERCENT')
+        ls_value = ls.get('value', '160')
+
+        try:
+            val = int(ls_value)
+        except (ValueError, TypeError):
+            return int(font_height * 1.6)
+
+        if ls_type == 'PERCENT':
+            # value is percentage (e.g. 160 = 160%)
+            return int(font_height * val / 100)
+        elif ls_type == 'FIXED':
+            # value is absolute HWPUNIT
+            return val
+        elif ls_type == 'ATLEAST':
+            return max(val, font_height)
+        else:
+            return int(font_height * 1.6)
+
     def _handle_hwce_equation(self, script: str, width: int, height: int,
                               is_block: bool, char_pr_id=0):
         """Create a native HWPX equation element (<hp:equation>).
 
-        Dynamically scales equation size and baseLine to match the surrounding
-        text's font size (read from charPr height attribute).
-
-        Inline equations are sized close to the text height to avoid disrupting
-        line spacing. Display (block) equations use larger dimensions.
+        Dynamically sizes equation to fit the paragraph's line spacing.
+        Reads font height from charPr and line spacing from the current paraPr
+        to compute correct height and baseLine values.
         """
         import xml.sax.saxutils as sax
         safe_script = sax.escape(script)
 
-        # Scale equation dimensions to surrounding font size
+        # Get font size and line height from current context
         font_height = self._get_font_height_from_char_pr(char_pr_id)
         scale = font_height / self._EQ_REF_FONT_HEIGHT
 
-        scaled_baseline = str(int(self._EQ_REF_BASELINE * scale))
+        # Get current paragraph's line height
+        current_para_pr = getattr(self, '_current_para_pr_id', self.normal_para_pr_id)
+        line_height = self._get_line_height_from_para_pr(current_para_pr, font_height)
+
         if is_block:
-            # Display equation: use full estimated size
-            scaled_width = str(int(width * scale))
-            scaled_height = str(int(height * scale))
+            # Display equation: use full estimated size (scaled)
+            eq_height = int(height * scale)
+            eq_width = int(width * scale)
         else:
-            # Inline equation: constrain height to ~text size to preserve line spacing
-            # Simple vars: height ≈ font_height; complex (fractions): up to 1.5x
-            inline_height = int(font_height * (height / 2100))  # ratio from base 2100
-            inline_height = max(inline_height, font_height)     # at least text height
-            inline_height = min(inline_height, int(font_height * 1.5))  # cap at 1.5x
-            scaled_width = str(int(width * scale))
-            scaled_height = str(inline_height)
+            # Inline equation: fit within line height
+            # Complexity ratio from estimated height (base 2100 for simple)
+            complexity = height / 2100
+            # Scale to line height; simple (complexity=1) = line_height
+            eq_height = int(line_height * complexity)
+            eq_height = max(eq_height, int(font_height * 0.9))  # at least ~font size
+            eq_height = min(eq_height, int(line_height * 1.3))  # don't exceed line too much
+            eq_width = int(width * scale)
+
+        # baseLine: proportional to equation height (matching reference ratio)
+        eq_baseline = max(1, int(eq_height * self._EQ_BASELINE_RATIO))
 
         # baseUnit controls equation *internal* font size (1000 = 10pt)
         scaled_base_unit = str(int(1000 * scale))
@@ -2842,7 +2891,7 @@ class MarkdownToHwpx:
             'textWrap': 'TOP_AND_BOTTOM', 'textFlow': 'BOTH_SIDES',
             'lock': '0', 'dropcapstyle': 'None',
             'version': 'Equation Version 60',
-            'baseLine': scaled_baseline,
+            'baseLine': str(eq_baseline),
             'textColor': '#000000',
             'baseUnit': scaled_base_unit,
             'lineMode': 'CHAR',
@@ -2850,8 +2899,8 @@ class MarkdownToHwpx:
         })
 
         self._add_elem(eq, NS_PARA, 'sz', {
-            'width': scaled_width, 'widthRelTo': 'ABSOLUTE',
-            'height': scaled_height, 'heightRelTo': 'ABSOLUTE',
+            'width': str(eq_width), 'widthRelTo': 'ABSOLUTE',
+            'height': str(eq_height), 'heightRelTo': 'ABSOLUTE',
             'protect': '0',
         })
         self._add_elem(eq, NS_PARA, 'pos', {
