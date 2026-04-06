@@ -2768,12 +2768,12 @@ class MarkdownToHwpx:
         else:
             return self._create_text_run_elem(latex, char_pr_id)
 
-    # Reference equation sizing (from equation_sample.hwpx at 10pt / charPr height=1000):
-    #   baseLine=71, simple var sz height=2100
-    # These are baseline values scaled proportionally to the surrounding font size.
+    # Equation sizing reference (from equation_sample.hwpx, 10pt / charPr height=1000):
+    #   Display: baseLine=67-71, sz height=2100 (standalone equation paragraph)
+    #   Inline: should match text height to avoid disrupting line spacing
     _EQ_REF_FONT_HEIGHT = 1000  # charPr height for 10pt reference
-    _EQ_REF_BASELINE = 71       # baseLine at 10pt
-    _EQ_REF_SZ_HEIGHT = 2100    # equation sz height at 10pt (simple expression)
+    _EQ_REF_BASELINE = 71       # baseLine at 10pt (display)
+    _EQ_INLINE_BASELINE = 50    # baseLine at 10pt (inline, tighter to text)
 
     def _get_font_height_from_char_pr(self, char_pr_id):
         """Look up font height from a charPr element in header.xml.
@@ -2808,6 +2808,9 @@ class MarkdownToHwpx:
 
         Dynamically scales equation size and baseLine to match the surrounding
         text's font size (read from charPr height attribute).
+
+        Inline equations are sized close to the text height to avoid disrupting
+        line spacing. Display (block) equations use larger dimensions.
         """
         import xml.sax.saxutils as sax
         safe_script = sax.escape(script)
@@ -2816,9 +2819,21 @@ class MarkdownToHwpx:
         font_height = self._get_font_height_from_char_pr(char_pr_id)
         scale = font_height / self._EQ_REF_FONT_HEIGHT
 
-        scaled_baseline = str(int(self._EQ_REF_BASELINE * scale))
-        scaled_width = str(int(width * scale))
-        scaled_height = str(int(height * scale))
+        if is_block:
+            # Display equation: use full estimated size
+            scaled_baseline = str(int(self._EQ_REF_BASELINE * scale))
+            scaled_width = str(int(width * scale))
+            scaled_height = str(int(height * scale))
+        else:
+            # Inline equation: constrain height to ~text size to preserve line spacing
+            # Simple vars: height ≈ font_height; complex (fractions): up to 1.5x
+            inline_height = int(font_height * (height / 2100))  # ratio from base 2100
+            inline_height = max(inline_height, font_height)     # at least text height
+            inline_height = min(inline_height, int(font_height * 1.6))  # cap at 1.6x
+            scaled_width = str(int(width * scale))
+            scaled_height = str(inline_height)
+            scaled_baseline = str(int(self._EQ_INLINE_BASELINE * scale))
+
         # baseUnit controls equation *internal* font size (1000 = 10pt)
         scaled_base_unit = str(int(1000 * scale))
 
