@@ -2768,20 +2768,57 @@ class MarkdownToHwpx:
         else:
             return self._create_text_run_elem(latex, char_pr_id)
 
-    # Equation baseLine: fixed value matching Hancom Office's default for 10pt text.
-    # This is NOT a ratio of height — it's an absolute value in the equation's
-    # coordinate system. Reference equation_sample.hwpx uses baseLine=71.
-    _EQ_BASELINE = '71'
+    # Reference equation sizing (from equation_sample.hwpx at 10pt / charPr height=1000):
+    #   baseLine=71, simple var sz height=2100
+    # These are baseline values scaled proportionally to the surrounding font size.
+    _EQ_REF_FONT_HEIGHT = 1000  # charPr height for 10pt reference
+    _EQ_REF_BASELINE = 71       # baseLine at 10pt
+    _EQ_REF_SZ_HEIGHT = 2100    # equation sz height at 10pt (simple expression)
+
+    def _get_font_height_from_char_pr(self, char_pr_id):
+        """Look up font height from a charPr element in header.xml.
+
+        charPr 'height' attribute = font size in units of pt × 100.
+        E.g. height="1000" = 10pt, height="2600" = 26pt.
+
+        Returns int (default 1000 for 10pt if not found).
+        """
+        if self.header_root is None:
+            return self._EQ_REF_FONT_HEIGHT
+
+        cp = self.header_root.find(
+            f'.//hh:charPr[@id="{char_pr_id}"]', self.namespaces)
+        if cp is not None:
+            h = cp.get('height')
+            if h and h.isdigit() and int(h) > 0:
+                return int(h)
+
+        # Fallback to charPr id=0
+        cp0 = self.header_root.find('.//hh:charPr[@id="0"]', self.namespaces)
+        if cp0 is not None:
+            h = cp0.get('height')
+            if h and h.isdigit() and int(h) > 0:
+                return int(h)
+
+        return self._EQ_REF_FONT_HEIGHT
 
     def _handle_hwce_equation(self, script: str, width: int, height: int,
                               is_block: bool, char_pr_id=0):
         """Create a native HWPX equation element (<hp:equation>).
 
-        Matches the structure produced by Hancom Office's equation editor,
-        including required attributes like version, baseLine, font, etc.
+        Dynamically scales equation size and baseLine to match the surrounding
+        text's font size (read from charPr height attribute).
         """
         import xml.sax.saxutils as sax
         safe_script = sax.escape(script)
+
+        # Scale equation dimensions to surrounding font size
+        font_height = self._get_font_height_from_char_pr(char_pr_id)
+        scale = font_height / self._EQ_REF_FONT_HEIGHT
+
+        scaled_baseline = str(int(self._EQ_REF_BASELINE * scale))
+        scaled_width = str(int(width * scale))
+        scaled_height = str(int(height * scale))
 
         run = self._create_run_elem(char_pr_id)
 
@@ -2790,7 +2827,7 @@ class MarkdownToHwpx:
             'textWrap': 'TOP_AND_BOTTOM', 'textFlow': 'BOTH_SIDES',
             'lock': '0', 'dropcapstyle': 'None',
             'version': 'Equation Version 60',
-            'baseLine': self._EQ_BASELINE,
+            'baseLine': scaled_baseline,
             'textColor': '#000000',
             'baseUnit': '1000',
             'lineMode': 'CHAR',
@@ -2798,8 +2835,8 @@ class MarkdownToHwpx:
         })
 
         self._add_elem(eq, NS_PARA, 'sz', {
-            'width': str(width), 'widthRelTo': 'ABSOLUTE',
-            'height': str(height), 'heightRelTo': 'ABSOLUTE',
+            'width': scaled_width, 'widthRelTo': 'ABSOLUTE',
+            'height': scaled_height, 'heightRelTo': 'ABSOLUTE',
             'protect': '0',
         })
         self._add_elem(eq, NS_PARA, 'pos', {
