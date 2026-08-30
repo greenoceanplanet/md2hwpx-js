@@ -1,9 +1,14 @@
-> **[이 포크(greenoceanplanet/md2hwpx)에서 추가된 기능]**
+> ## 이 포크(greenoceanplanet/md2hwpx)에서 추가된 기능
 > 표/그림에 pandoc 스타일 캡션(`: 캡션`, 그림 alt 텍스트)을 넣으면 한/글 네이티브
 > 캡션 요소(`<hp:caption>` + `<hp:autoNum>`)로 변환되어, 한/글에서 "표 1", "그림 1"처럼
 > **자동 번호가 매겨지고 순서 변경 시 자동 갱신**됩니다. 캡션 문단 스타일은 참조
 > 템플릿에서 `표제목`/`그림제목`(있으면 우선) → 범용 `캡션`/`Caption` → Normal
-> 순으로 동적으로 찾아 적용합니다. 자세한 내용은 아래 "포크 이후 변경 사항" 참고.
+> 순으로 동적으로 찾아 적용합니다.
+>
+> 변경 사항: [`MarkdownToHwpx.py`](md2hwpx/MarkdownToHwpx.py), [`marko_adapter.py`](md2hwpx/marko_adapter.py)
+>
+> 이 안내문 아래는 **원본(jundamin/md2hwpx) README 그대로**이며, 이 포크에서 수정하지
+> 않았습니다.
 
 ---
 
@@ -234,8 +239,8 @@ md2hwpx input.md --reference-doc=my_template.hwpx -o output.hwpx
 | 문단 | 지원 |
 | 굵게 / 기울임 / 취소선 | 지원 |
 | 링크 | 지원 (HWPX 하이퍼링크) |
-| 이미지 | 지원 (임베딩 + 네이티브 캡션·자동번호) |
-| 표 (GFM) | 지원 (정렬 + 컬럼 비율 + 네이티브 캡션·자동번호) |
+| 이미지 | 지원 (임베딩) |
+| 표 (GFM) | 지원 (정렬 + 컬럼 비율) |
 | 글머리/번호 목록 | 지원 (중첩) |
 | 코드 블록 | 지원 |
 | 인라인 코드 | 지원 |
@@ -276,11 +281,6 @@ md2hwpx test.md -o output.hwpx --verbose
 - 헤더 앞 공백/페이지브레이크 레벨별 설정 (`--page-break-before`, `--space-before-header`, `--blank-lines-before-header`)
 - 빈줄 높이(mm) 지정 지원 (`blank_lines_before_header: {2: [2, 5.0]}`)
 - JSON/YAML 설정 파일 지원 (`--config`), Python API에서도 `ConversionConfig` 직접 전달 가능
-- 표/그림 네이티브 캡션 지원: pandoc 스타일 표 캡션(`: 캡션`)과 그림 alt 텍스트를
-  일반 문단이 아니라 한컴오피스의 진짜 캡션 요소(`<hp:caption>` + `<hp:autoNum>`)로
-  변환하여, 한/글에서 "표 1", "그림 1"처럼 자동 번호가 매겨지고 순서 변경 시 자동
-  갱신되도록 함. 캡션 문단 스타일은 참조 템플릿에서 `표제목`/`그림제목`(있으면 우선),
-  없으면 범용 `캡션`/`Caption`, 그것도 없으면 Normal 순으로 동적으로 찾아 적용
 
 ## 라이선스
 
