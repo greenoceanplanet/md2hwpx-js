@@ -1707,6 +1707,101 @@ class MarkdownToHwpx:
         """Handle Plain block."""
         return self._handle_text_block(content, 'BODY')
 
+    # --- Native HWPX caption (<hp:caption>) support for tables/figures ---
+    #
+    # Schema confirmed empirically from a real HWPX document (Hangul's own
+    # "Insert Caption" output): for both <hp:tbl> and <hp:pic>, the caption
+    # element is a child positioned right after <hp:outMargin> (and, for
+    # tables, right before <hp:inMargin>/the row data). Caption text is
+    # wrapped in angle brackets with a native auto-number control char:
+    #   <표 [autoNum numType=TABLE]> caption text
+    #   <그림 [autoNum numType=PICTURE]> caption text
+    # This makes 그림/표 numbers native and auto-renumbering in Hangul,
+    # not literal text.
+
+    def _get_caption_style_ids(self, kind):
+        """Find the template's dedicated caption style for `kind`
+        ('TABLE' or 'PICTURE'), preferring the type-specific style Korean
+        report templates conventionally use ('표제목'/'그림제목'), then
+        the generic Hangul "Insert Caption" style (engName='Caption' or
+        name='캡션'), else fall back to Normal."""
+        type_specific_name = '표제목' if kind == 'TABLE' else '그림제목'
+        candidates = [type_specific_name, '캡션']
+
+        if self.header_root is not None:
+            styles_by_name = {}
+            for style_node in self.header_root.findall('.//hh:style', self.namespaces):
+                if style_node.get('type') != 'PARA':
+                    continue
+                name = style_node.get('name')
+                eng_name = style_node.get('engName')
+                if name:
+                    styles_by_name[name] = style_node
+                if eng_name == 'Caption' and '캡션' not in styles_by_name:
+                    styles_by_name['캡션'] = style_node
+
+            for candidate in candidates:
+                style_node = styles_by_name.get(candidate)
+                if style_node is not None:
+                    return style_node.get('id', '0'), style_node.get('paraPrIDRef', '0')
+
+        return str(self.normal_style_id), str(self.normal_para_pr_id)
+
+    def _create_native_caption_elem(self, inlines, num_type, label, box_width):
+        """Build a native <hp:caption> element for a table or figure.
+
+        Args:
+            inlines: caption text as pandoc inlines (may be empty/None)
+            num_type: 'TABLE' or 'PICTURE'
+            label: '표' (table) or '그림' (figure) - the prefix word before the number
+            box_width: width (HWP units) of the owning table/picture,
+                used as the caption box's lastWidth
+        """
+        style_id, para_pr_id = self._get_caption_style_ids(num_type)
+
+        caption = self._make_elem(NS_PARA, 'caption', {
+            'side': 'TOP',
+            'fullSz': '0',
+            'width': '8504',
+            'gap': '850',
+            'lastWidth': str(box_width),
+        })
+        sublist = self._add_elem(caption, NS_PARA, 'subList', {
+            'id': '',
+            'textDirection': 'HORIZONTAL',
+            'lineWrap': 'BREAK',
+            'vertAlign': 'TOP',
+            'linkListIDRef': '0',
+            'linkListNextIDRef': '0',
+            'textWidth': '0',
+            'textHeight': '0',
+            'hasTextRef': '0',
+            'hasNumRef': '0',
+        })
+        para = self._add_elem(sublist, NS_PARA, 'p', {
+            'id': '0',
+            'paraPrIDRef': para_pr_id,
+            'styleIDRef': style_id,
+            'pageBreak': '0',
+            'columnBreak': '0',
+            'merged': '0',
+        })
+        prefix_run = self._add_elem(para, NS_PARA, 'run', {'charPrIDRef': '0'})
+        self._add_elem(prefix_run, NS_PARA, 't', text=f'<{label} ')
+
+        ctrl = self._add_elem(prefix_run, NS_PARA, 'ctrl')
+        autonum = self._add_elem(ctrl, NS_PARA, 'autoNum', {'num': '1', 'numType': num_type})
+        self._add_elem(autonum, NS_PARA, 'autoNumFormat', {
+            'type': 'DIGIT', 'userChar': '', 'prefixChar': '', 'suffixChar': '', 'supscript': '0',
+        })
+        self._add_elem(prefix_run, NS_PARA, 't', text='> ')
+
+        if inlines:
+            # Sibling runs, not nested inside prefix_run: hp:run cannot contain hp:run.
+            self._process_inlines_to_elems(inlines, para, base_char_pr_id=0)
+
+        return caption
+
     def _handle_code_block(self, content):
         # Code formatting? IDK...
         code = content[1]
@@ -2202,6 +2297,14 @@ class MarkdownToHwpx:
             'left': '0', 'right': '0', 'top': '0',
             'bottom': str(self.config.TABLE_OUT_MARGIN_BOTTOM)
         })
+
+        caption_inlines = self._table_caption_inlines(content)
+        if caption_inlines is not None:
+            caption_elem = self._create_native_caption_elem(
+                caption_inlines, num_type='TABLE', label='표', box_width=TOTAL_TABLE_WIDTH
+            )
+            tbl.append(caption_elem)
+
         cell_margin = self.config.CELL_MARGIN_DEFAULT
         self._add_elem(tbl, NS_PARA, 'inMargin', {
             'left': str(cell_margin['left']),
@@ -2321,6 +2424,19 @@ class MarkdownToHwpx:
             curr_row_addr += 1
 
         return para
+
+    @staticmethod
+    def _table_caption_inlines(content):
+        """Extract caption inlines from a Table's content[1] caption slot
+        (Pandoc: [shortCaption_or_None, [Block, ...]]), or None if absent."""
+        caption = content[1] if len(content) > 1 else None
+        if not caption or not caption[1]:
+            return None
+        inlines = []
+        for block in caption[1]:
+            if block.get('t') in ('Plain', 'Para'):
+                inlines.extend(block.get('c', []))
+        return inlines if inlines else None
 
     def _handle_table(self, content):
         """Handle table block (legacy wrapper)."""
@@ -2682,7 +2798,7 @@ class MarkdownToHwpx:
         pic = self._add_elem(run, NS_PARA, 'pic', {
             'id': pic_id,
             'zOrder': '0',
-            'numberingType': 'NONE',
+            'numberingType': 'PICTURE' if caption else 'NONE',
             'textWrap': 'TOP_AND_BOTTOM',
             'textFlow': 'BOTH_SIDES',
             'lock': '0',
@@ -2750,6 +2866,13 @@ class MarkdownToHwpx:
             'horzOffset': '0'
         })
         self._add_elem(pic, NS_PARA, 'outMargin', {'left': '0', 'right': '0', 'top': '0', 'bottom': '0'})
+
+        if caption:
+            caption_elem = self._create_native_caption_elem(
+                caption, num_type='PICTURE', label='그림', box_width=width
+            )
+            pic.append(caption_elem)
+
         self._add_elem(pic, NS_PARA, 'shapeComment')
 
         return run

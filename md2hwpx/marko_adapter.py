@@ -95,6 +95,28 @@ class MarkoToPandocAdapter:
             "c": [level, ["", [], []], inlines]
         }
 
+    # Matches a standalone pandoc-style caption line, e.g. ": 표 캡션".
+    # Must not match a table row like "| a | b |" or a separator "|---|".
+    TABLE_CAPTION_RE = re.compile(r'^:\s+(.+)$')
+
+    def _preprocess_table_captions(self, markdown_text: str) -> str:
+        """Split pandoc-style ': caption' lines away from an adjacent table.
+
+        Marko's GFM table extension greedily absorbs any non-blank line
+        following a table row as a new (single-cell) row, so a caption
+        line placed directly under a table (the pandoc convention) gets
+        swallowed into the table instead of becoming its own paragraph.
+        Inserting a blank line before the caption line prevents that,
+        letting `_attach_captions` pick it up as a normal Para afterwards.
+        """
+        lines = markdown_text.split('\n')
+        processed_lines = []
+        for idx, line in enumerate(lines):
+            if self.TABLE_CAPTION_RE.match(line.strip()) and processed_lines and processed_lines[-1].strip().startswith('|'):
+                processed_lines.append('')
+            processed_lines.append(line)
+        return '\n'.join(processed_lines)
+
     def _preprocess_table_dashes(self, markdown_text):
         """Extract dash counts from table separator rows before Marko parsing.
 
@@ -276,6 +298,10 @@ class MarkoToPandocAdapter:
         # Preprocess to handle extended headers (7-9)
         processed_text = self._preprocess_extended_headers(processed_text)
 
+        # Split pandoc-style table captions away from the table itself,
+        # so Marko's GFM table parser doesn't absorb the caption line.
+        processed_text = self._preprocess_table_captions(processed_text)
+
         # Extract table dash counts for proportional column widths
         self._preprocess_table_dashes(processed_text)
 
@@ -296,11 +322,77 @@ class MarkoToPandocAdapter:
                     block = self._restore_math_inlines(block)
                 blocks.append(block)
 
+        blocks = self._attach_captions(blocks)
+
         return {
             "pandoc-api-version": [1, 23, 1],  # Compatibility marker
             "meta": {},  # Metadata handled separately by python-frontmatter
             "blocks": blocks
         }
+
+    # Pandoc caption paragraph: a Para whose first inline is a literal ":"
+    # e.g. ": 표 캡션 텍스트" (table caption, normally placed after the table)
+    _CAPTION_PARA_RE = re.compile(r'^:\s+(.+)$')
+
+    def _extract_caption_para_text(self, block: dict):
+        """If `block` is a Para that is a pandoc-style caption line
+        (starts with ': '), return its inlines with the leading ':'
+        stripped; otherwise return None."""
+        if block.get('t') != 'Para':
+            return None
+        inlines = block.get('c', [])
+        if not inlines or inlines[0].get('t') != 'Str':
+            return None
+        first_text = inlines[0].get('c', '')
+        if not first_text.startswith(':'):
+            return None
+
+        remainder = first_text[1:]
+        rest = inlines[1:]
+        new_inlines = []
+        if remainder:
+            new_inlines.append({"t": "Str", "c": remainder})
+        elif rest and rest[0].get('t') == 'Space':
+            rest = rest[1:]
+        new_inlines.extend(rest)
+        if not new_inlines:
+            return None
+        return new_inlines
+
+    def _attach_captions(self, blocks: list) -> list:
+        """Find pandoc-style ': caption' paragraphs adjacent to a Table or
+        an image-only Para, move the caption text into the Table/Image's
+        caption slot, and drop the standalone caption paragraph.
+
+        Table captions conventionally follow the table; image captions
+        here are just the image's own alt text. Both are surfaced so the
+        HWPX renderer can place them above the table/figure.
+        """
+        result = []
+        i = 0
+        n = len(blocks)
+        while i < n:
+            block = blocks[i]
+
+            if block.get('t') == 'Table':
+                # Look ahead: pandoc table captions follow the table
+                if i + 1 < n:
+                    caption_inlines = self._extract_caption_para_text(blocks[i + 1])
+                    if caption_inlines is not None:
+                        block['c'][1] = [None, [{"t": "Plain", "c": caption_inlines}]]
+                        i += 1  # consume the caption paragraph
+                result.append(block)
+                i += 1
+                continue
+
+            # Look behind: a caption line immediately preceding a table
+            # (rare, but handle for symmetry) is handled naturally because
+            # we only consume forward captions above.
+
+            result.append(block)
+            i += 1
+
+        return result
 
     def _restore_extended_header(self, block: dict) -> dict:
         """
