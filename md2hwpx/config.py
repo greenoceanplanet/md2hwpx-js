@@ -77,6 +77,16 @@ class ConversionConfig:
     LINK_COLOR = '#0000FF'  # Blue
     LINK_UNDERLINE = True
 
+    # === Source-note paragraphs ===
+    # A standalone "*자료: ...*" paragraph (a Para whose entire content is a
+    # single Emph) is rendered distinctly from body text: non-italic, an
+    # explicit sans-serif Korean font, and a slightly smaller size than BODY.
+    # Mirrors the web (`p.source-note`) and PDF (`source-note()` Typst func)
+    # treatment of the same markdown convention.
+    SOURCE_NOTE_FONT_CANDIDATES = ('맑은 고딕', 'Malgun Gothic', 'Noto Sans KR', 'NanumGothic')
+    SOURCE_NOTE_SIZE_DELTA_PT = 1.5   # Subtracted from BODY's font size (in points)
+    SOURCE_NOTE_MIN_SIZE_PT = 7.0     # Floor so size never gets absurdly small
+
     # === Character/Paragraph Property IDs ===
     # These are typically extracted from template, but defaults are provided
     DEFAULT_CHAR_PR_ID = 0

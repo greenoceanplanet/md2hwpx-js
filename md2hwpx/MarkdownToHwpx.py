@@ -85,6 +85,11 @@ class MarkdownToHwpx:
         self.char_pr_cache = {}
         self.max_char_pr_id = 0
 
+        # cache: base_char_pr_id (str) -> derived "source-note" char_pr_id
+        self._source_note_char_pr_cache = {}
+        # cache: (lang, candidates tuple) -> resolved font id (str) or None
+        self._source_note_font_id_cache = {}
+
         self.images = [] # metadata for images
 
         # Math renderer (None if math handling is 'none' or 'italic')
@@ -1239,6 +1244,11 @@ class MarkdownToHwpx:
                         else:
                             result.append(self._make_empty_para())
                 result.append(self._handle_header(b_content))
+            elif b_type == 'Para' and block.get('sourceNote'):
+                # Standalone "*자료: ...*" note paragraph (see marko_adapter's
+                # _restore_source_note): render distinctly from BODY instead
+                # of via the normal Para handler.
+                result.append(self._handle_source_note(b_content))
             else:
                 handler = self._block_handlers.get(b_type)
                 if handler is not None:
@@ -1706,6 +1716,125 @@ class MarkdownToHwpx:
     def _handle_plain(self, content):
         """Handle Plain block."""
         return self._handle_text_block(content, 'BODY')
+
+    def _handle_source_note(self, content):
+        """Handle a "source-note" Para (see marko_adapter._restore_source_note):
+        a standalone "*자료: ...*"-style paragraph immediately following a
+        chart image or table. Rendered like BODY (same paragraph style/
+        margins) but with distinct character formatting: explicit sans-serif
+        Korean font, non-italic, and a slightly smaller size — mirroring the
+        `p.source-note` CSS class (web) and `source-note()` Typst function
+        (PDF) treatment of the same markdown convention.
+        """
+        if 'BODY' in self.placeholder_styles:
+            props = self.placeholder_styles['BODY']
+            base_char_pr_id = props['charPrIDRef']
+            para_pr_id = props['paraPrIDRef']
+        else:
+            base_char_pr_id = 0
+            para_pr_id = self.normal_para_pr_id
+            if self.header_root is not None:
+                style_node = self.header_root.find(
+                    f'.//hh:style[@id="{self.normal_style_id}"]', self.namespaces
+                )
+                if style_node is not None:
+                    base_char_pr_id = style_node.get('charPrIDRef', 0)
+
+        source_note_char_pr_id = self._get_source_note_char_pr_id(base_char_pr_id)
+
+        para = self._create_para_elem(style_id=self.normal_style_id, para_pr_id=para_pr_id)
+        self._current_para_pr_id = para_pr_id
+        self._process_inlines_to_elems(content, para, base_char_pr_id=int(source_note_char_pr_id))
+        return self._elem_to_str(para)
+
+    def _resolve_source_note_font_id(self, lang):
+        """Find a font id for `lang` in the template's <hh:fontfaces> whose
+        face name matches one of config.SOURCE_NOTE_FONT_CANDIDATES
+        (case-insensitive, whitespace-insensitive). Returns None if no match
+        (caller should then leave the original fontRef untouched)."""
+        candidates = tuple(self.config.SOURCE_NOTE_FONT_CANDIDATES)
+        cache_key = (lang, candidates)
+        if cache_key in self._source_note_font_id_cache:
+            return self._source_note_font_id_cache[cache_key]
+
+        result = None
+        if self.header_root is not None:
+            normalized_candidates = [c.strip().lower() for c in candidates]
+            fontface = self.header_root.find(
+                f'.//hh:fontfaces/hh:fontface[@lang="{lang}"]', self.namespaces
+            )
+            if fontface is not None:
+                fonts_by_face = {}
+                for font in fontface.findall('hh:font', self.namespaces):
+                    face = (font.get('face') or '').strip().lower()
+                    if face and face not in fonts_by_face:
+                        fonts_by_face[face] = font.get('id')
+                for cand in normalized_candidates:
+                    if cand in fonts_by_face:
+                        result = fonts_by_face[cand]
+                        break
+
+        self._source_note_font_id_cache[cache_key] = result
+        return result
+
+    def _get_source_note_char_pr_id(self, base_char_pr_id):
+        """Get (creating + caching on first use) a charPr id derived from
+        `base_char_pr_id` that renders non-italic, in an explicit sans-serif
+        Korean font, at a slightly smaller size — the "source-note" style.
+        """
+        base_char_pr_id = str(base_char_pr_id)
+        if base_char_pr_id in self._source_note_char_pr_cache:
+            return self._source_note_char_pr_cache[base_char_pr_id]
+
+        if self.header_root is None:
+            self._source_note_char_pr_cache[base_char_pr_id] = base_char_pr_id
+            return base_char_pr_id
+
+        base_node = self.header_root.find(
+            f'.//hh:charPr[@id="{base_char_pr_id}"]', self.namespaces
+        )
+        if base_node is None:
+            base_node = self.header_root.find('.//hh:charPr[@id="0"]', self.namespaces)
+        if base_node is None:
+            self._source_note_char_pr_cache[base_char_pr_id] = base_char_pr_id
+            return base_char_pr_id
+
+        new_node = copy.deepcopy(base_node)
+        self.max_char_pr_id += 1
+        new_id = str(self.max_char_pr_id)
+        new_node.set('id', new_id)
+
+        # Non-italic: drop any inherited <hh:italic/> so the note never
+        # renders as italic (the whole point vs. plain italic BODY).
+        italic_node = new_node.find('hh:italic', self.namespaces)
+        if italic_node is not None:
+            new_node.remove(italic_node)
+
+        # Explicit sans-serif font per script, where the template defines one.
+        font_ref = new_node.find('hh:fontRef', self.namespaces)
+        if font_ref is not None:
+            for lang_attr in ('hangul', 'latin', 'hanja', 'japanese', 'other', 'symbol', 'user'):
+                lang_name = lang_attr.upper()
+                font_id = self._resolve_source_note_font_id(lang_name)
+                if font_id is not None:
+                    font_ref.set(lang_attr, font_id)
+
+        # Slightly smaller than BODY, clamped to a sane minimum.
+        try:
+            base_height = int(new_node.get('height', '1000'))
+        except (TypeError, ValueError):
+            base_height = 1000
+        delta_height = int(round(self.config.SOURCE_NOTE_SIZE_DELTA_PT * 100))
+        min_height = int(round(self.config.SOURCE_NOTE_MIN_SIZE_PT * 100))
+        new_height = max(base_height - delta_height, min_height)
+        new_node.set('height', str(new_height))
+
+        char_props = self.header_root.find('.//hh:charProperties', self.namespaces)
+        if char_props is not None:
+            char_props.append(new_node)
+
+        self._source_note_char_pr_cache[base_char_pr_id] = new_id
+        return new_id
 
     # --- Native HWPX caption (<hp:caption>) support for tables/figures ---
     #

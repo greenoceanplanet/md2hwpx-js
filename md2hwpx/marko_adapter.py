@@ -316,6 +316,7 @@ class MarkoToPandocAdapter:
             block = self._convert_block(child)
             if block:
                 # Check if this is an extended header or math placeholder
+                block = self._restore_source_note(block)
                 block = self._restore_extended_header(block)
                 block = self._restore_math_block(block)
                 if self._math_inlines:
@@ -393,6 +394,36 @@ class MarkoToPandocAdapter:
             i += 1
 
         return result
+
+    def _restore_source_note(self, block: dict) -> dict:
+        """
+        Detect a "source-note" paragraph: a Para whose ENTIRE content is a
+        single Emph inline (e.g. markdown "*자료: ...*" on its own line,
+        immediately following a chart image or table). This mirrors the
+        `<p><em>...</em></p>` / standalone `#emph[...]` convention already
+        used for this in the web/PDF builds.
+
+        Mixed paragraphs (Emph alongside other inline content mid-sentence)
+        are left untouched — only a Para with exactly one top-level inline
+        that is itself an Emph qualifies.
+
+        Unwraps the Emph so the emphasis isn't double-applied as italic at
+        render time, and tags the block with a custom `sourceNote` marker
+        so MarkdownToHwpx.py can style it distinctly (non-italic sans font,
+        slightly smaller size) instead of plain italic BODY.
+        """
+        if block.get('t') != 'Para':
+            return block
+
+        inlines = block.get('c', [])
+        if len(inlines) != 1:
+            return block
+
+        first = inlines[0]
+        if first.get('t') != 'Emph':
+            return block
+
+        return {"t": "Para", "c": first.get('c', []), "sourceNote": True}
 
     def _restore_extended_header(self, block: dict) -> dict:
         """

@@ -65,7 +65,11 @@ class TestAdapterInlineFormatting:
         assert any(i.get('t') == 'Strong' for i in inlines)
 
     def test_italic(self, adapter):
-        result = adapter.parse("*italic*")
+        # Emph mixed with other inline content stays a plain Emph node.
+        # (A paragraph that is *only* "*italic*" is the "source-note"
+        # convention — see TestSourceNoteParagraph below — and gets
+        # unwrapped/tagged instead.)
+        result = adapter.parse("plain *italic* text")
         para = result['blocks'][0]
         inlines = para['c']
         assert any(i.get('t') == 'Emph' for i in inlines)
@@ -581,4 +585,50 @@ class TestMathHwceMode:
         inlines = header['c'][2]
         maths = [i for i in inlines if i.get('t') == 'Math']
         assert len(maths) == 1
-        assert maths[0]['c'][1] == 'Y'
+
+
+class TestSourceNoteParagraph:
+    """A Para whose ENTIRE content is a single Emph (e.g. a standalone
+    "*자료: ...*" caption line right after a chart image or table) is the
+    "source-note" convention shared with the web (`p.source-note`) and PDF
+    (`source-note()` Typst function) builds. It must come out unwrapped
+    (no nested Emph, so MarkdownToHwpx.py doesn't double-apply italic) and
+    tagged with `sourceNote: True` so the renderer can style it distinctly.
+    """
+
+    def test_standalone_emphasis_paragraph_is_tagged(self, adapter):
+        result = adapter.parse("*자료: 국토교통부 토지소유현황.*")
+        blocks = result['blocks']
+        assert len(blocks) == 1
+        para = blocks[0]
+        assert para['t'] == 'Para'
+        assert para.get('sourceNote') is True
+        # Emph should be unwrapped, not left nested inside 'c'
+        assert not any(i.get('t') == 'Emph' for i in para['c'])
+        assert any(i.get('t') == 'Str' for i in para['c'])
+
+    def test_mixed_emphasis_paragraph_is_not_tagged(self, adapter):
+        # Emph alongside other inline content mid-sentence must NOT be
+        # treated as a source-note.
+        result = adapter.parse("설명 *강조* 계속.")
+        para = result['blocks'][0]
+        assert para['t'] == 'Para'
+        assert 'sourceNote' not in para
+        assert any(i.get('t') == 'Emph' for i in para['c'])
+
+    def test_bold_only_paragraph_is_not_tagged(self, adapter):
+        # Only a *whole-paragraph Emph* qualifies — Strong (bold) is a
+        # different convention and must be left alone.
+        result = adapter.parse("**bold only**")
+        para = result['blocks'][0]
+        assert para['t'] == 'Para'
+        assert 'sourceNote' not in para
+        assert any(i.get('t') == 'Strong' for i in para['c'])
+
+    def test_extended_header_placeholder_not_affected(self, adapter):
+        # Order-of-operations regression guard: extended header (7-9)
+        # restoration keys off a single-Str Para, which is unrelated to
+        # the single-Emph source-note check and must still work.
+        result = adapter.parse("####### Extended Header")
+        blocks = result['blocks']
+        assert any(b['t'] == 'Header' and b['c'][0] == 7 for b in blocks)
