@@ -1,0 +1,25 @@
+# md2hwpx --insert-into 설정 예시
+# 사용: md2hwpx 초안.md --insert-into 보고서.hwpx --under-heading "절 제목" --config 이파일.yaml -o 결과.hwpx
+
+# 요소별 스타일 이름 (대상 한글 문서의 F6 스타일 목록 이름 그대로)
+style_map:
+  H1: null            # md의 "# 제목"은 버림 (대상 문서에 이미 있는 절 제목)
+  H2: "1)"            # md "## 제목"
+  H3: "(1)"           # md "### 제목"
+  BODY: "□"           # 일반 문단
+  LIST_BULLET_1: "□"  # "- 항목"
+  LIST_BULLET_2: "○"  # "  - 항목"
+  LIST_BULLET_3: "-"
+  SOURCE: "표,그림 주,자료"   # "자료 : ..." 줄
+  # CAPTION: "캡션"   # 캡션 스타일을 직접 지정할 때 (없으면 기존 표의 캡션을 본뜸)
+
+table_style_from_document: true   # 기존 표의 셀·테두리·캡션·너비를 본뜸
+table_auto_width: true            # 열 너비를 글자 수에 비례
+
+strip_heading_numbers: true       # "가." "(1)" 등 수동 번호 제거
+korean_caption_lines: true        # "<표 N> 제목"(표 위), "<그림 N> 제목"(그림 아래) → 자동번호 캡션
+# caption_line_regex: '^\s*[<〈]\s*(표|그림)\s*[^>〉]*[>〉]\s*(.*?)\s*$'
+# table_caption_line_position: above
+# figure_caption_line_position: below
+
+source_note_prefixes: ["자료", "주", "출처"]

@@ -1,7 +1,10 @@
-> ## 이 포크(greenoceanplanet/md2hwpx)에서 추가된 기능
+> ## md2hwpx-js : 이 포크(greenoceanplanet/md2hwpx-js)에서 추가된 기능
 >
-> 이 안내문 아래(`---` 이후)는 **원본(jundamin/md2hwpx) README 그대로**이며, 포크에서
-> 추가한 기능은 이 안내문에만 정리합니다.
+> 원본 `jundamin/md2hwpx`의 포크입니다(원본과 구별하려고 저장소 이름을 `md2hwpx-js`로 바꿈.
+> 명령·패키지 이름은 그대로 `md2hwpx`). 이 안내문 아래(`---` 이후)는 **원본 README 그대로**이며,
+> 포크에서 추가한 기능은 이 안내문에만 정리합니다.
+>
+> 설치 : `uv tool install --reinstall --with pyyaml "git+https://github.com/greenoceanplanet/md2hwpx-js.git"`
 >
 > ### 1. 한/글 네이티브 캡션
 > 표/그림에 pandoc 스타일 캡션(`: 캡션`, 그림 alt 텍스트)을 넣으면 한/글 캡션 요소
@@ -61,7 +64,35 @@
 > | `source_note_prefixes: ["자료", "주"]` | `자료 : ...`로 시작하는 문단을 자료 줄(`SOURCE` 스타일)로 |
 > | `single_tilde_strikethrough: false` (기본값) | `60~80%`처럼 물결표 하나는 글자 그대로 둠. `~~취소선~~`은 그대로 취소선 |
 >
-> ### 5. 그 밖의 수정
+> ### 5. 설정 파일(YAML) 작성 요령
+> `--config 파일.yaml`로 넘깁니다(`.json`도 가능). 규칙은 다음과 같습니다.
+>
+> - 한 줄에 `키: 값`. 키는 아래 표의 이름(소문자·밑줄), 값 뒤 `#`부터는 주석
+> - 참/거짓은 `true` / `false`, 없음은 `null`, 목록은 `["자료", "주"]`
+> - 글자 값은 큰따옴표로 감싸는 편이 안전함. 특히 `1)` `(1)` `-` `□`처럼 기호가 든 스타일 이름
+> - `style_map`처럼 묶음인 값은 다음 줄부터 **공백 2칸** 들여 써서 `키: 값`을 나열(탭 금지)
+> - 정규식(`caption_line_regex`)은 작은따옴표로 감쌈(역슬래시를 그대로 쓰기 위해)
+> - 적지 않은 키는 기본값을 씀. CLI 옵션이 설정 파일보다 우선
+>
+> | 키 | 값 | 기본값 | 뜻 |
+> |---|---|---|---|
+> | `style_map` | 묶음 | 없음 | 요소별 스타일 이름(3절 참고) |
+> | `table_style_from_document` | true/false | false | 기존 표 양식을 본뜸 |
+> | `table_auto_width` | true/false | false | 열 너비를 글자 수에 비례 |
+> | `strip_heading_numbers` | true/false | false | 제목 앞 수동 번호 제거 |
+> | `korean_caption_lines` | true/false | false | `<표 N>`·`<그림 N>` 줄을 캡션으로 |
+> | `caption_line_regex` | 정규식 | `<표 N>`·`〈표 N〉` 형식 | 캡션 줄 형식. 괄호 묶음 2개(종류 낱말, 제목) |
+> | `caption_table_word` / `caption_figure_word` | 글자 | `표` / `그림` | 캡션 줄의 종류 낱말 |
+> | `table_caption_line_position` | above/below | above | 표 캡션 줄이 표의 위/아래 |
+> | `figure_caption_line_position` | above/below | below | 그림 캡션 줄이 그림의 위/아래 |
+> | `source_note_prefixes` | 목록 | 없음 | 이 낱말 + `:`로 시작하는 문단을 자료 줄로 |
+> | `single_tilde_strikethrough` | true/false | false | 물결표 하나를 취소선으로 볼지 |
+>
+> 그 밖에 원본의 설정 키(`page_break_before_header_levels`, `space_before_header_mm` 등)도
+> 같은 파일에 쓸 수 있습니다(아래 "설정 파일로 지정" 참고). 예시는
+> [`templates/insert-config.example.yaml`](templates/insert-config.example.yaml).
+>
+> ### 6. 그 밖의 수정
 > - 글머리표·본문 문단에 템플릿 플레이스홀더의 **스타일 번호**가 빠지던 문제 수정
 > - 표 셀 플레이스홀더의 **글자·문단 모양과 세로 정렬**이 무시되던 문제 수정
 >   (셀 서식이 있으면 md 열 정렬은 그 셀 문단모양을 바탕으로 적용, 머리행은 템플릿 정렬 유지)
