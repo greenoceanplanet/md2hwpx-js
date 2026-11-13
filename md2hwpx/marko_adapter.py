@@ -295,6 +295,14 @@ class MarkoToPandocAdapter:
         if self.config.STRIP_PANDOC_ATTRIBUTES:
             processed_text = self._preprocess_strip_pandoc_attributes(processed_text)
 
+        # Korean report-draft conventions
+        if getattr(self.config, 'KOREAN_CAPTION_LINES', False):
+            processed_text = self._preprocess_korean_caption_lines(processed_text)
+        if getattr(self.config, 'STRIP_HEADING_NUMBERS', False):
+            processed_text = self._preprocess_strip_heading_numbers(processed_text)
+        if not getattr(self.config, 'SINGLE_TILDE_STRIKETHROUGH', False):
+            processed_text = self._preprocess_escape_single_tilde(processed_text)
+
         # Preprocess to handle extended headers (7-9)
         processed_text = self._preprocess_extended_headers(processed_text)
 
@@ -416,6 +424,14 @@ class MarkoToPandocAdapter:
             return block
 
         inlines = block.get('c', [])
+
+        prefixes = tuple(getattr(self.config, 'SOURCE_NOTE_PREFIXES', ()) or ())
+        if prefixes and inlines:
+            text = ''.join(i.get('c', '') if i.get('t') == 'Str' else ' '
+                           for i in inlines[:6] if i.get('t') in ('Str', 'Space'))
+            if re.match(r'^(?:%s)\s*:' % '|'.join(re.escape(p) for p in prefixes), text):
+                return {"t": "Para", "c": inlines, "sourceNote": True}
+
         if len(inlines) != 1:
             return block
 
@@ -424,6 +440,108 @@ class MarkoToPandocAdapter:
             return block
 
         return {"t": "Para", "c": first.get('c', []), "sourceNote": True}
+
+    # --- Korean report-draft preprocessing ---------------------------------
+
+    _KR_CAPTION_RE = re.compile(r'^\s*[<〈]\s*(표|그림)\s*[^>〉]*[>〉]\s*(.*?)\s*$')
+    _IMAGE_LINE_RE = re.compile(r'^(\s*)!\[([^\]]*)\]\(([^)]*)\)\s*$')
+    _HEADING_NUM_RE = re.compile(
+        r'^(#{1,9})\s+(?:[가-하]\.|\d+\.|\d+\)|\(\d+\)|\([가-하]\)|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\.|[①-⑳])\s+')
+
+    def _preprocess_korean_caption_lines(self, text: str) -> str:
+        """Caption lines such as '<표 N> 제목' (above a table) and
+        '<그림 N> 제목' (below an image) → native caption syntax
+        (': 제목' after the table / the image's alt text).
+        Format and positions come from config CAPTION_LINE_* settings."""
+        cfg = self.config
+        cap_re = re.compile(getattr(cfg, 'CAPTION_LINE_REGEX', self._KR_CAPTION_RE.pattern))
+        tbl_word = getattr(cfg, 'CAPTION_TABLE_WORD', '표')
+        fig_word = getattr(cfg, 'CAPTION_FIGURE_WORD', '그림')
+        tbl_pos = getattr(cfg, 'TABLE_CAPTION_LINE_POSITION', 'above')
+        fig_pos = getattr(cfg, 'FIGURE_CAPTION_LINE_POSITION', 'below')
+
+        lines = text.split('\n')
+        n = len(lines)
+
+        def caption(idx, word):
+            if 0 <= idx < n:
+                m = cap_re.match(lines[idx])
+                if m and m.group(1) == word:
+                    return m.group(2)
+            return None
+
+        def next_nonblank(idx, step):
+            idx += step
+            while 0 <= idx < n and not lines[idx].strip():
+                idx += step
+            return idx
+
+        is_tbl = [l.lstrip().startswith('|') for l in lines]
+        drop = set()
+        replace = {}
+        table_caption_after = {}  # last table line index -> caption text
+
+        i = 0
+        while i < n:
+            if is_tbl[i]:
+                start = i
+                while i < n and is_tbl[i]:
+                    i += 1
+                end = i - 1
+                probe = next_nonblank(start, -1) if tbl_pos == 'above' else next_nonblank(end, 1)
+                cap = caption(probe, tbl_word)
+                if cap is not None:
+                    drop.add(probe)
+                    table_caption_after[end] = cap
+                continue
+            mi = self._IMAGE_LINE_RE.match(lines[i])
+            if mi:
+                probe = next_nonblank(i, 1) if fig_pos == 'below' else next_nonblank(i, -1)
+                cap = caption(probe, fig_word)
+                if cap is not None:
+                    drop.add(probe)
+                    cap = cap.replace(']', '\\]')
+                    replace[i] = f'{mi.group(1)}![{cap}]({mi.group(3)})'
+            i += 1
+
+        out = []
+        for k, line in enumerate(lines):
+            if k in drop:
+                continue
+            out.append(replace.get(k, line))
+            if k in table_caption_after:
+                out.append(': ' + table_caption_after[k])
+        return '\n'.join(out)
+
+    def _preprocess_strip_heading_numbers(self, text: str) -> str:
+        out = []
+        fence = False
+        for line in text.split('\n'):
+            if line.lstrip().startswith('```'):
+                fence = not fence
+            if not fence:
+                line = self._HEADING_NUM_RE.sub(r'\1 ', line)
+            out.append(line)
+        return '\n'.join(out)
+
+    def _preprocess_escape_single_tilde(self, text: str) -> str:
+        """Escape lone '~' (not part of '~~') outside code so GFM doesn't
+        read ranges such as '60~80%' as strikethrough."""
+        out = []
+        fence = False
+        for line in text.split('\n'):
+            if line.lstrip().startswith('```') or line.lstrip().startswith('~~~'):
+                fence = not fence
+                out.append(line)
+                continue
+            if fence or '~' not in line:
+                out.append(line)
+                continue
+            parts = re.split(r'(`+[^`]*`+)', line)
+            for k in range(0, len(parts), 2):
+                parts[k] = re.sub(r'(?<![~\\])~(?!~)', r'\\~', parts[k])
+            out.append(''.join(parts))
+        return '\n'.join(out)
 
     def _restore_extended_header(self, block: dict) -> dict:
         """

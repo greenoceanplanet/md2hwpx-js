@@ -16,6 +16,7 @@ from .frontmatter_parser import (
 from .config import ConversionConfig, DEFAULT_CONFIG
 from .exceptions import HwpxError, TemplateError, ImageError, StyleError, ConversionError
 from .converter_api import convert_string
+from .insert import insert_markdown
 
 __version__ = "0.1.5"
 __all__ = [
@@ -33,4 +34,5 @@ __all__ = [
     "StyleError",
     "ConversionError",
     "convert_string",
+    "insert_markdown",
 ]

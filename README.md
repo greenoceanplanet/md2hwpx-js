@@ -1,14 +1,75 @@
 > ## 이 포크(greenoceanplanet/md2hwpx)에서 추가된 기능
-> 표/그림에 pandoc 스타일 캡션(`: 캡션`, 그림 alt 텍스트)을 넣으면 한/글 네이티브
-> 캡션 요소(`<hp:caption>` + `<hp:autoNum>`)로 변환되어, 한/글에서 "표 1", "그림 1"처럼
-> **자동 번호가 매겨지고 순서 변경 시 자동 갱신**됩니다. 캡션 문단 스타일은 참조
-> 템플릿에서 `표제목`/`그림제목`(있으면 우선) → 범용 `캡션`/`Caption` → Normal
-> 순으로 동적으로 찾아 적용합니다.
 >
-> 변경 사항: [`MarkdownToHwpx.py`](md2hwpx/MarkdownToHwpx.py), [`marko_adapter.py`](md2hwpx/marko_adapter.py)
+> 이 안내문 아래(`---` 이후)는 **원본(jundamin/md2hwpx) README 그대로**이며, 포크에서
+> 추가한 기능은 이 안내문에만 정리합니다.
 >
-> 이 안내문 아래는 **원본(jundamin/md2hwpx) README 그대로**이며, 이 포크에서 수정하지
-> 않았습니다.
+> ### 1. 한/글 네이티브 캡션
+> 표/그림에 pandoc 스타일 캡션(`: 캡션`, 그림 alt 텍스트)을 넣으면 한/글 캡션 요소
+> (`<hp:caption>` + `<hp:autoNum>`)로 변환되어 "〈표 1〉", "〈그림 1〉"처럼 **자동 번호가
+> 매겨지고 순서 변경 시 자동 갱신**됩니다. 캡션 서식은 `STYLE_MAP`의 `CAPTION*` →
+> 기존 표에서 본뜬 캡션(`table_style_from_document`) → 참조 문서의 `표제목`/`그림제목`
+> → `캡션`/`Caption` → Normal 순으로 정합니다.
+>
+> ### 2. 기존 한/글 문서에 삽입 (`--insert-into`)
+> 새 문서를 만드는 대신, **이미 있는 hwpx의 특정 절에 그 문서의 양식 그대로** 넣습니다.
+> 공동 보고서처럼 다른 사람이 양식을 정한 문서에 md 원고를 넣을 때 씁니다.
+>
+> ```bash
+> md2hwpx 초안.md --insert-into 보고서.hwpx --under-heading "절 제목" \
+>         --config 삽입설정.yaml -o 결과.hwpx
+> ```
+>
+> - 제목 글자가 `--under-heading`과 같은 문단을 찾아, 그 **다음부터 같은 수준 이상의 다음
+>   제목 직전까지**를 통째로 바꿉니다. 다시 돌리면 이전 삽입분이 새 내용으로 바뀝니다.
+>   `-o`를 대상 파일과 같게 주면 제자리에서 갱신합니다.
+> - 대상 문서의 header.xml(스타일 정의)은 **기존 정의를 그대로 두고**, 변환 중 새로 생긴
+>   정의만 끝에 덧붙입니다. 기존 정의와 똑같은 것은 덧붙이지 않고 재사용하므로, 여러 번
+>   돌려도 정의가 쌓이지 않습니다.
+> - 그림 파일은 BinData에 넣고, 이전 삽입에서 넣었다가 더는 안 쓰는 그림은 지웁니다.
+> - Python API: `md2hwpx.insert_markdown(target, output, [(md, heading), ...], config)`
+>   (여러 절을 한 번에 넣을 수 있음)
+>
+> ### 3. 스타일을 "이름"으로 지정 (`style_map`)
+> 플레이스홀더 템플릿을 만들지 않고, 참조(대상) 문서의 **스타일 이름**(한/글 F6 목록)으로
+> 서식을 지정합니다. 문서마다 달라지는 스타일 번호를 몰라도 됩니다.
+>
+> ```yaml
+> style_map:
+>   H1: null            # null이면 해당 수준 제목을 버림(대상 문서에 이미 있는 절 제목 등)
+>   H2: "1)"
+>   H3: "(1)"
+>   BODY: "□"
+>   LIST_BULLET_1: "□"
+>   LIST_BULLET_2: "○"
+>   SOURCE: "표,그림 주,자료"   # 자료 줄
+>   # 그 밖의 키: H1~H9, LIST_ORDERED_1~7, CAPTION, CAPTION_TABLE, CAPTION_FIGURE,
+>   #            TABLE(표를 담는 문단), FIGURE(그림만 있는 문단)
+> table_style_from_document: true   # 기존 표(캡션 있는 표 우선)의 셀·테두리·캡션·너비를 본뜸
+> table_auto_width: true            # 열 너비를 글자 수에 비례하게
+> ```
+>
+> 글머리 스타일의 문단모양에 글머리표(□ ○ 등)가 들어 있으면 글자로 된 접두어를 따로 붙이지
+> 않습니다. `style_map`이 있으면 개요 수준이 빠진 문서도 오류 없이 처리합니다.
+>
+> ### 4. 한국어 보고서 초안용 전처리
+>
+> | 설정 | 동작 |
+> |---|---|
+> | `strip_heading_numbers: true` | 제목 앞의 수동 번호(`가.` `1.` `1)` `(1)` `Ⅲ.` `①`) 제거. 한/글 개요 번호와 중복 방지 |
+> | `korean_caption_lines: true` | 표 위의 `<표 N> 제목` 줄, 그림 아래의 `<그림 N> 제목` 줄을 자동번호 캡션으로 |
+> | `caption_line_regex`, `caption_table_word`, `caption_figure_word`, `table_caption_line_position`(above/below), `figure_caption_line_position`(above/below) | 캡션 줄 형식이 바뀌면 여기서 조정 |
+> | `source_note_prefixes: ["자료", "주"]` | `자료 : ...`로 시작하는 문단을 자료 줄(`SOURCE` 스타일)로 |
+> | `single_tilde_strikethrough: false` (기본값) | `60~80%`처럼 물결표 하나는 글자 그대로 둠. `~~취소선~~`은 그대로 취소선 |
+>
+> ### 5. 그 밖의 수정
+> - 글머리표·본문 문단에 템플릿 플레이스홀더의 **스타일 번호**가 빠지던 문제 수정
+> - 표 셀 플레이스홀더의 **글자·문단 모양과 세로 정렬**이 무시되던 문제 수정
+>   (셀 서식이 있으면 md 열 정렬은 그 셀 문단모양을 바탕으로 적용, 머리행은 템플릿 정렬 유지)
+> - 단어마다 쪼개지던 글자 묶음(run)을 같은 글자모양끼리 합침
+>
+> 변경 파일: [`MarkdownToHwpx.py`](md2hwpx/MarkdownToHwpx.py), [`marko_adapter.py`](md2hwpx/marko_adapter.py),
+> [`config.py`](md2hwpx/config.py), [`insert.py`](md2hwpx/insert.py), [`cli.py`](md2hwpx/cli.py),
+> 테스트 [`tests/test_insert.py`](tests/test_insert.py)
 
 ---
 

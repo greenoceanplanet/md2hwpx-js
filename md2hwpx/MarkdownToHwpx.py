@@ -119,6 +119,18 @@ class MarkdownToHwpx:
         if self.section_xml_content and self.header_root is not None:
             self._load_placeholder_styles()
 
+        # Heading levels dropped via STYLE_MAP {"H1": None}
+        self._dropped_header_levels = set()
+        # Table borderFill copied from an existing table (TABLE_STYLE_FROM_DOCUMENT)
+        self.table_border_fill_override = None
+        # Cell text style while rendering a table cell's blocks
+        self._cell_text_style = None
+        if self.header_root is not None:
+            if self.section_xml_content and getattr(self.config, 'TABLE_STYLE_FROM_DOCUMENT', False):
+                self._apply_document_table_style()
+            if getattr(self.config, 'STYLE_MAP', None):
+                self._apply_style_map()
+
     def _extract_metadata(self):
         if not self.ast:
             return
@@ -641,11 +653,21 @@ class MarkdownToHwpx:
             #     But for Lists we just use Normal.
 
             if detected_levels: # Only validate if found
+                 # With STYLE_MAP, headings are resolved by style name, so a
+                 # gapped outline table in someone else's document is harmless.
+                 strict = not getattr(self.config, 'STYLE_MAP', None)
+                 problem = None
                  if detected_levels[0] != 0:
-                     raise ValueError(f"Outline levels must start from 0. Found start: {detected_levels[0]}")
-                 for i in range(len(detected_levels)):
-                     if detected_levels[i] != i:
-                         raise ValueError(f"Outline levels are missing/gapped. Expected {i}, found {detected_levels[i]}")
+                     problem = f"Outline levels must start from 0. Found start: {detected_levels[0]}"
+                 else:
+                     for i in range(len(detected_levels)):
+                         if detected_levels[i] != i:
+                             problem = f"Outline levels are missing/gapped. Expected {i}, found {detected_levels[i]}"
+                             break
+                 if problem:
+                     if strict:
+                         raise ValueError(problem)
+                     logger.warning("%s (ignored: STYLE_MAP in use)", problem)
 
             logger.debug("Validated Outline Levels: %s", detected_levels)
 
@@ -972,6 +994,7 @@ class MarkdownToHwpx:
                         list_styles[(list_type, level)] = {
                             'charPrIDRef': styles['charPrIDRef'],
                             'paraPrIDRef': styles['paraPrIDRef'],
+                            'styleIDRef': styles.get('styleIDRef'),
                             'mode': 'numbering' if has_numbering else 'prefix',
                             'prefix': prefix if (not has_numbering and not prefix_run_elems) else None,
                             'numPrIDRef': num_pr_id if has_numbering else None,
@@ -1056,11 +1079,137 @@ class MarkdownToHwpx:
             'cellMargin': self._extract_cell_margin(tc),
         }
 
+        sublist = tc.find('hp:subList', self.namespaces)
+        if sublist is not None and sublist.get('vertAlign'):
+            attrs['vertAlign'] = sublist.get('vertAlign')
+
         # Also resolve borderFill details from header.xml
         if attrs['borderFillIDRef'] and self.header_root is not None:
             attrs['borderFill'] = self._resolve_border_fill(attrs['borderFillIDRef'])
 
         return attrs
+
+    # --- Style resolution by NAME (STYLE_MAP) -------------------------------
+
+    def _find_style_by_name(self, name):
+        """Return the <hh:style> node whose name (or engName) equals `name`."""
+        if self.header_root is None or not name:
+            return None
+        fallback = None
+        for st in self.header_root.findall('.//hh:style', self.namespaces):
+            if st.get('name') == name:
+                return st
+            if fallback is None and st.get('engName') == name:
+                fallback = st
+        return fallback
+
+    def _para_pr_is_auto_list(self, para_pr_id):
+        """True if the paraPr carries its own bullet/number (heading type
+        BULLET/NUMBER or a numPr), so no text prefix must be added."""
+        node = self.header_root.find(f'.//hh:paraPr[@id="{para_pr_id}"]', self.namespaces)
+        if node is None:
+            return False
+        if node.find('hh:numPr', self.namespaces) is not None:
+            return True
+        for h in node.iter(f'{{{NS_HEAD}}}heading'):
+            if h.get('type') in ('BULLET', 'NUMBER'):
+                return True
+        return False
+
+    def _apply_style_map(self):
+        """Resolve config.STYLE_MAP {key: style name} into placeholder styles."""
+        for key, name in self.config.STYLE_MAP.items():
+            key = str(key).upper()
+            if name is None:
+                if re.fullmatch(r'H[1-9]', key):
+                    self._dropped_header_levels.add(int(key[1:]))
+                continue
+            st = self._find_style_by_name(name)
+            if st is None:
+                logger.warning("STYLE_MAP: style %r for %s not found in reference document", name, key)
+                continue
+            props = {
+                'charPrIDRef': st.get('charPrIDRef', '0'),
+                'paraPrIDRef': st.get('paraPrIDRef', '0'),
+                'styleIDRef': st.get('id', '0'),
+                'prefix': None, 'prefixCharPrIDRef': None, 'prefixRunElems': None,
+                'table': None, 'mode': 'plain', 'numberingText': None,
+            }
+            m = re.fullmatch(r'LIST_(BULLET|ORDERED)_(\d)', key)
+            if m:
+                self.list_styles[(m.group(1), int(m.group(2)))] = {
+                    'charPrIDRef': props['charPrIDRef'],
+                    'paraPrIDRef': props['paraPrIDRef'],
+                    'styleIDRef': props['styleIDRef'],
+                    'mode': 'numbering' if self._para_pr_is_auto_list(props['paraPrIDRef']) else 'prefix',
+                    'prefix': None, 'numPrIDRef': None, 'prefixRunElems': None,
+                }
+            else:
+                self.placeholder_styles[key] = props
+
+    def _apply_document_table_style(self):
+        """Copy table look from an existing table in the reference document
+        (prefer one with a caption, else the first with 2+ rows)."""
+        try:
+            root = ET.fromstring(self.section_xml_content)
+        except ET.ParseError:
+            return
+        tables = [t for t in root.iter(f'{{{NS_PARA}}}tbl') if len(t.findall('hp:tr', self.namespaces)) >= 2]
+        if not tables:
+            return
+        captioned = [t for t in tables if t.find('hp:caption', self.namespaces) is not None]
+        tbl = (captioned or tables)[0]
+
+        def first_text_para(tc):
+            for p in tc.iter(f'{{{NS_PARA}}}p'):
+                run = p.find('hp:run', self.namespaces)
+                if run is not None:
+                    return p, run
+            return None, None
+
+        rows = tbl.findall('hp:tr', self.namespaces)
+        for row_kind, row in (('HEADER', rows[0]), ('BODY', rows[1])):
+            tc = row.find('hp:tc', self.namespaces)
+            p, run = first_text_para(tc)
+            if p is None:
+                continue
+            attrs = self._extract_cell_attributes(tc, p, run)
+            kinds = ['HEADER'] if row_kind == 'HEADER' else ['TOP', 'MIDDLE', 'BOTTOM']
+            for k in kinds:
+                for col in ('LEFT', 'CENTER', 'RIGHT'):
+                    self.cell_styles.setdefault(f'{k}_{col}', attrs)
+
+        sz = tbl.find('hp:sz', self.namespaces)
+        if sz is not None and not self.template_table_width:
+            self.template_table_width = int(sz.get('width'))
+        self.table_border_fill_override = tbl.get('borderFillIDRef')
+        om = tbl.find('hp:outMargin', self.namespaces)
+        if om is not None:
+            self.template_table_out_margin = {k: om.get(k, '0') for k in ('left', 'right', 'top', 'bottom')}
+
+        cap = tbl.find('hp:caption', self.namespaces)
+        if cap is not None:
+            cp = cap.find('.//hp:p', self.namespaces)
+            crun = cp.find('hp:run', self.namespaces) if cp is not None else None
+            if cp is not None:
+                self.placeholder_styles.setdefault('CAPTION_TABLE', {
+                    'charPrIDRef': crun.get('charPrIDRef', '0') if crun is not None else '0',
+                    'paraPrIDRef': cp.get('paraPrIDRef', '0'),
+                    'styleIDRef': cp.get('styleIDRef', '0'),
+                    'mode': 'plain',
+                })
+
+        # Paragraph that holds the table
+        for p in root.iter(f'{{{NS_PARA}}}p'):
+            run = p.find('hp:run', self.namespaces)
+            if run is not None and run.find('hp:tbl', self.namespaces) is tbl:
+                self.placeholder_styles.setdefault('TABLE', {
+                    'charPrIDRef': run.get('charPrIDRef', '0'),
+                    'paraPrIDRef': p.get('paraPrIDRef', '0'),
+                    'styleIDRef': p.get('styleIDRef', '0'),
+                    'mode': 'plain',
+                })
+                break
 
     def _extract_cell_margin(self, tc):
         """Extract cell margin values from <hp:cellMargin> element."""
@@ -1226,6 +1375,9 @@ class MarkdownToHwpx:
             b_type = block.get('t')
             b_content = block.get('c')
 
+            if b_type == 'Header' and b_content and b_content[0] in self._dropped_header_levels:
+                continue  # STYLE_MAP {"Hn": None}: heading already exists in the target
+
             if b_type == 'Header':
                 # Pre-block hook: spacing before header (only when not first block)
                 if self._has_emitted_block:
@@ -1294,7 +1446,29 @@ class MarkdownToHwpx:
 
     def _elem_to_str(self, elem):
         """Convert element to XML string."""
+        self._merge_text_runs(elem)
         return ET.tostring(elem, encoding='unicode')
+
+    @staticmethod
+    def _merge_text_runs(elem):
+        """Merge consecutive plain-text runs with identical attributes inside
+        every paragraph (the converter emits one run per word/space)."""
+        p_tag = f'{{{NS_PARA}}}p'
+        run_tag = f'{{{NS_PARA}}}run'
+        t_tag = f'{{{NS_PARA}}}t'
+        paras = [elem] if elem.tag == p_tag else []
+        paras += [p for p in elem.iter(p_tag) if p is not elem]
+        for p in paras:
+            prev = None
+            for child in list(p):
+                is_plain = (child.tag == run_tag and len(child) > 0
+                            and all(k.tag == t_tag and len(k) == 0 for k in child))
+                if is_plain and prev is not None and prev.attrib == child.attrib:
+                    last_t = prev[-1]
+                    last_t.text = (last_t.text or '') + ''.join(k.text or '' for k in child)
+                    p.remove(child)
+                    continue
+                prev = child if is_plain else None
 
     # --- Paragraph/Run Element Creators ---
 
@@ -1690,24 +1864,45 @@ class MarkdownToHwpx:
         Returns:
             XML string of the paragraph
         """
-        if placeholder_name in self.placeholder_styles:
-            props = self.placeholder_styles[placeholder_name]
-            char_pr_id = props['charPrIDRef']
-            para_pr_id = props['paraPrIDRef']
+        style_id = self.normal_style_id
+        if self._cell_text_style is not None:
+            # Inside a table cell: use the cell's own paragraph/char style
+            props = self._cell_text_style
+            char_pr_id = props.get('charPrIDRef', 0)
+            para_pr_id = props.get('paraPrIDRef', self.normal_para_pr_id)
+            style_id = props.get('styleIDRef', self.normal_style_id)
         else:
-            char_pr_id = 0
-            para_pr_id = self.normal_para_pr_id
-            if self.header_root is not None:
-                style_node = self.header_root.find(
-                    f'.//hh:style[@id="{self.normal_style_id}"]', self.namespaces
-                )
-                if style_node is not None:
-                    char_pr_id = style_node.get('charPrIDRef', 0)
+            if placeholder_name == 'BODY' and self._is_image_only(content):
+                for key in ('FIGURE', 'TABLE'):
+                    if key in self.placeholder_styles:
+                        placeholder_name = key
+                        break
+            if placeholder_name in self.placeholder_styles:
+                props = self.placeholder_styles[placeholder_name]
+                char_pr_id = props['charPrIDRef']
+                para_pr_id = props['paraPrIDRef']
+                style_id = props.get('styleIDRef') or self.normal_style_id
+            else:
+                char_pr_id = 0
+                para_pr_id = self.normal_para_pr_id
+                if self.header_root is not None:
+                    style_node = self.header_root.find(
+                        f'.//hh:style[@id="{self.normal_style_id}"]', self.namespaces
+                    )
+                    if style_node is not None:
+                        char_pr_id = style_node.get('charPrIDRef', 0)
 
-        para = self._create_para_elem(style_id=self.normal_style_id, para_pr_id=para_pr_id)
+        para = self._create_para_elem(style_id=int(style_id), para_pr_id=para_pr_id)
         self._current_para_pr_id = para_pr_id
         self._process_inlines_to_elems(content, para, base_char_pr_id=int(char_pr_id))
         return self._elem_to_str(para)
+
+    @staticmethod
+    def _is_image_only(inlines):
+        if not isinstance(inlines, list):
+            return False
+        kinds = [i.get('t') for i in inlines if isinstance(i, dict)]
+        return 'Image' in kinds and all(k in ('Image', 'Space', 'SoftBreak') for k in kinds)
 
     def _handle_para(self, content):
         """Handle Para block."""
@@ -1726,10 +1921,21 @@ class MarkdownToHwpx:
         `p.source-note` CSS class (web) and `source-note()` Typst function
         (PDF) treatment of the same markdown convention.
         """
+        if 'SOURCE' in self.placeholder_styles:
+            # Explicit source-note style (STYLE_MAP) — use it as-is
+            props = self.placeholder_styles['SOURCE']
+            para = self._create_para_elem(style_id=int(props.get('styleIDRef') or self.normal_style_id),
+                                          para_pr_id=props['paraPrIDRef'])
+            self._current_para_pr_id = props['paraPrIDRef']
+            self._process_inlines_to_elems(content, para, base_char_pr_id=int(props['charPrIDRef']))
+            return self._elem_to_str(para)
+
+        style_id = self.normal_style_id
         if 'BODY' in self.placeholder_styles:
             props = self.placeholder_styles['BODY']
             base_char_pr_id = props['charPrIDRef']
             para_pr_id = props['paraPrIDRef']
+            style_id = props.get('styleIDRef') or self.normal_style_id
         else:
             base_char_pr_id = 0
             para_pr_id = self.normal_para_pr_id
@@ -1742,7 +1948,7 @@ class MarkdownToHwpx:
 
         source_note_char_pr_id = self._get_source_note_char_pr_id(base_char_pr_id)
 
-        para = self._create_para_elem(style_id=self.normal_style_id, para_pr_id=para_pr_id)
+        para = self._create_para_elem(style_id=int(style_id), para_pr_id=para_pr_id)
         self._current_para_pr_id = para_pr_id
         self._process_inlines_to_elems(content, para, base_char_pr_id=int(source_note_char_pr_id))
         return self._elem_to_str(para)
@@ -1886,7 +2092,21 @@ class MarkdownToHwpx:
             box_width: width (HWP units) of the owning table/picture,
                 used as the caption box's lastWidth
         """
-        style_id, para_pr_id = self._get_caption_style_ids(num_type)
+        # Explicit caption style: STYLE_MAP / sampled from an existing table
+        keys = (['CAPTION_TABLE', 'CAPTION'] if num_type == 'TABLE'
+                else ['CAPTION_FIGURE', 'CAPTION', 'CAPTION_TABLE'])
+        cap_props = next((self.placeholder_styles[k] for k in keys if k in self.placeholder_styles), None)
+        if cap_props is not None:
+            style_id = str(cap_props.get('styleIDRef') or self.normal_style_id)
+            para_pr_id = str(cap_props['paraPrIDRef'])
+            cap_char_pr = str(cap_props['charPrIDRef'])
+        else:
+            style_id, para_pr_id = self._get_caption_style_ids(num_type)
+            cap_char_pr = '0'
+            st = self.header_root.find(f'.//hh:style[@id="{style_id}"]', self.namespaces) \
+                if self.header_root is not None else None
+            if st is not None and str(style_id) != str(self.normal_style_id):
+                cap_char_pr = st.get('charPrIDRef', '0')
 
         caption = self._make_elem(NS_PARA, 'caption', {
             'side': 'TOP',
@@ -1915,7 +2135,7 @@ class MarkdownToHwpx:
             'columnBreak': '0',
             'merged': '0',
         })
-        prefix_run = self._add_elem(para, NS_PARA, 'run', {'charPrIDRef': '0'})
+        prefix_run = self._add_elem(para, NS_PARA, 'run', {'charPrIDRef': cap_char_pr})
         self._add_elem(prefix_run, NS_PARA, 't', text=f'<{label} ')
 
         ctrl = self._add_elem(prefix_run, NS_PARA, 'ctrl')
@@ -1927,7 +2147,7 @@ class MarkdownToHwpx:
 
         if inlines:
             # Sibling runs, not nested inside prefix_run: hp:run cannot contain hp:run.
-            self._process_inlines_to_elems(inlines, para, base_char_pr_id=0)
+            self._process_inlines_to_elems(inlines, para, base_char_pr_id=int(cap_char_pr))
 
         return caption
 
@@ -2105,11 +2325,12 @@ class MarkdownToHwpx:
         """
         return self._PANDOC_ALIGN_MAP.get(pandoc_align)
 
-    def _get_aligned_para_pr(self, hwpx_align):
+    def _get_aligned_para_pr(self, hwpx_align, base_id=None):
         """Create or retrieve a paraPr with specific horizontal alignment.
 
         Args:
             hwpx_align: 'LEFT', 'CENTER', or 'RIGHT'
+            base_id: paraPr to derive from (default: Normal's paraPr)
 
         Returns:
             paraPr ID string, or None if alignment cannot be applied
@@ -2122,13 +2343,22 @@ class MarkdownToHwpx:
         if not hasattr(self, cache_attr):
             self._aligned_para_pr_cache = {}
 
-        if hwpx_align in self._aligned_para_pr_cache:
-            return self._aligned_para_pr_cache[hwpx_align]
+        if base_id is None:
+            base_id = self.normal_para_pr_id
+            cache_key = hwpx_align
+        else:
+            cache_key = (str(base_id), hwpx_align)
 
-        base_id = self.normal_para_pr_id
+        if cache_key in self._aligned_para_pr_cache:
+            return self._aligned_para_pr_cache[cache_key]
+
         base_node = self.header_root.find(f'.//hh:paraPr[@id="{base_id}"]', self.namespaces)
         if base_node is None:
             return None
+        base_align = base_node.find('hh:align', self.namespaces)
+        if cache_key != hwpx_align and base_align is not None and base_align.get('horizontal') == hwpx_align:
+            self._aligned_para_pr_cache[cache_key] = str(base_id)
+            return str(base_id)
 
         new_node = copy.deepcopy(base_node)
         self.max_para_pr_id += 1
@@ -2145,8 +2375,28 @@ class MarkdownToHwpx:
         if para_props is not None:
             para_props.append(new_node)
 
-        self._aligned_para_pr_cache[hwpx_align] = new_id
+        self._aligned_para_pr_cache[cache_key] = new_id
         return new_id
+
+    def _auto_column_widths(self, rows, col_cnt, total_width):
+        """Widths proportional to each column's longest cell text
+        (clamped to 4..30 chars so one long cell doesn't starve the rest)."""
+        want = [4] * col_cnt
+        for row in rows:
+            col = 0
+            for cell in row[1]:
+                colspan = cell[3]
+                if colspan == 1 and col < col_cnt:
+                    text = ''.join(self._get_plain_text(b.get('c', []))
+                                   for b in cell[4] if b.get('t') in ('Para', 'Plain'))
+                    want[col] = max(want[col], min(30, len(text.strip())))
+                col += colspan
+        s = sum(want)
+        if not s:
+            return None
+        widths = [int(total_width * w / s) for w in want]
+        widths[-1] += total_width - sum(widths)
+        return widths
 
     def _get_blockquote_para_pr(self, level=0):
         """Create or retrieve a paraPr with increased left margin for block quotes.
@@ -2376,12 +2626,21 @@ class MarkdownToHwpx:
         else:
             col_widths = [int(TOTAL_TABLE_WIDTH / col_cnt) for _ in specs]
 
+        if getattr(self.config, 'TABLE_AUTO_WIDTH', False) and len(set(col_widths)) <= 1 and col_cnt > 1:
+            col_widths = self._auto_column_widths(all_rows, col_cnt, TOTAL_TABLE_WIDTH) or col_widths
+
         # Generate IDs
         tbl_id = self._generate_id()
 
         # Create paragraph > run > table structure
-        para = self._create_para_elem(style_id=self.normal_style_id, para_pr_id=self.normal_para_pr_id)
-        run = self._add_elem(para, NS_PARA, 'run', {'charPrIDRef': '0'})
+        host = self.placeholder_styles.get('TABLE')
+        if host:
+            para = self._create_para_elem(style_id=int(host.get('styleIDRef') or self.normal_style_id),
+                                          para_pr_id=host['paraPrIDRef'])
+            run = self._add_elem(para, NS_PARA, 'run', {'charPrIDRef': str(host['charPrIDRef'])})
+        else:
+            para = self._create_para_elem(style_id=self.normal_style_id, para_pr_id=self.normal_para_pr_id)
+            run = self._add_elem(para, NS_PARA, 'run', {'charPrIDRef': '0'})
 
         # Table element
         tbl = self._add_elem(run, NS_PARA, 'tbl', {
@@ -2397,7 +2656,7 @@ class MarkdownToHwpx:
             'rowCnt': str(row_cnt),
             'colCnt': str(col_cnt),
             'cellSpacing': '0',
-            'borderFillIDRef': self.table_border_fill_id,
+            'borderFillIDRef': self.table_border_fill_override or self.table_border_fill_id,
             'noAdjust': '0'
         })
 
@@ -2422,7 +2681,7 @@ class MarkdownToHwpx:
             'vertOffset': '0',
             'horzOffset': '0'
         })
-        self._add_elem(tbl, NS_PARA, 'outMargin', {
+        self._add_elem(tbl, NS_PARA, 'outMargin', getattr(self, 'template_table_out_margin', None) or {
             'left': '0', 'right': '0', 'top': '0',
             'bottom': str(self.config.TABLE_OUT_MARGIN_BOTTOM)
         })
@@ -2513,7 +2772,7 @@ class MarkdownToHwpx:
                     'id': sublist_id,
                     'textDirection': 'HORIZONTAL',
                     'lineWrap': 'BREAK',
-                    'vertAlign': 'TOP',
+                    'vertAlign': cell_style.get('vertAlign', 'TOP'),
                     'linkListIDRef': '0',
                     'linkListNextIDRef': '0',
                     'textWidth': '0',
@@ -2525,14 +2784,23 @@ class MarkdownToHwpx:
                 # Determine paragraph alignment for cell content
                 hwpx_align = self._pandoc_align_to_hwpx(cell_align)
 
-                # Process cell blocks and add to sublist
-                cell_content_xml = self._process_blocks(cell_blocks)
+                # Process cell blocks (in the cell placeholder's text style) and add to sublist
+                prev_cell_style = self._cell_text_style
+                if cell_style.get('charPrIDRef') is not None and cell_style.get('paraPrIDRef') is not None:
+                    self._cell_text_style = cell_style
+                try:
+                    cell_content_xml = self._process_blocks(cell_blocks)
+                finally:
+                    self._cell_text_style = prev_cell_style
                 if cell_content_xml.strip():
                     wrapper = f'<root xmlns:hp="{NS_PARA}" xmlns:hc="{NS_CORE}">{cell_content_xml}</root>'
                     for elem in ET.fromstring(wrapper):
                         # Apply alignment to paragraph elements
-                        if hwpx_align and elem.tag.endswith('}p'):
-                            aligned_pr = self._get_aligned_para_pr(hwpx_align)
+                        styled_cell = cell_style.get('charPrIDRef') is not None and cell_style.get('paraPrIDRef') is not None
+                        # Styled header cells keep the template's alignment (usually centered)
+                        if hwpx_align and elem.tag.endswith('}p') and not (styled_cell and row_type == 'HEADER'):
+                            aligned_pr = self._get_aligned_para_pr(
+                                hwpx_align, base_id=elem.get('paraPrIDRef') if styled_cell else None)
                             if aligned_pr:
                                 elem.set('paraPrIDRef', aligned_pr)
                         sublist.append(elem)
@@ -3580,6 +3848,7 @@ class MarkdownToHwpx:
         prefix_run_elems = style_info.get('prefixRunElems')
         char_pr_id = int(style_info.get('charPrIDRef', 0))
         para_pr_id = int(style_info.get('paraPrIDRef', self.normal_para_pr_id))
+        list_style_id = int(style_info.get('styleIDRef') or self.normal_style_id)
 
         # For ordered lists, track counter to increment prefix numbers
         item_counter = start_num
@@ -3592,7 +3861,7 @@ class MarkdownToHwpx:
                 if b_type in ('Para', 'Plain'):
                     # Create paragraph with template styles
                     para = self._create_para_elem(
-                        style_id=self.normal_style_id,
+                        style_id=list_style_id,
                         para_pr_id=para_pr_id
                     )
 
@@ -3648,6 +3917,7 @@ class MarkdownToHwpx:
 
         char_pr_id = int(style_info.get('charPrIDRef', 0))
         para_pr_id = int(style_info.get('paraPrIDRef', self.normal_para_pr_id))
+        list_style_id = int(style_info.get('styleIDRef') or self.normal_style_id)
 
         for item_blocks in content:
             for block in item_blocks:
@@ -3657,7 +3927,7 @@ class MarkdownToHwpx:
                 if b_type in ('Para', 'Plain'):
                     # Use template's paraPr (which has numbering reference)
                     para = self._create_para_elem(
-                        style_id=self.normal_style_id,
+                        style_id=list_style_id,
                         para_pr_id=para_pr_id
                     )
                     self._process_inlines_to_elems(b_content, para, base_char_pr_id=char_pr_id)

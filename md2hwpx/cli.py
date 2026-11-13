@@ -59,6 +59,12 @@ def main():
                         help="Output file (.hwpx, .json for debug)")
     parser.add_argument("-r", "--reference-doc", required=False, default=None,
                         help="Reference HWPX for styles and page setup (default: built-in blank.hwpx)")
+    parser.add_argument("--insert-into", default=None, metavar="HWPX",
+                        help="Insert into this EXISTING HWPX instead of creating a new document "
+                             "(its styles are used; see --under-heading). -o may equal this file.")
+    parser.add_argument("--under-heading", default=None, metavar="TEXT",
+                        help="With --insert-into: replace the body under the heading with this text "
+                             "(up to the next heading of the same or higher level).")
     parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--verbose", action="store_true", default=False,
                         help="Show detailed debug output")
@@ -203,6 +209,22 @@ def main():
         config.STRIP_CELL_CODE_BLOCKS = True
     if args.math is not None:
         config.MATH_HANDLING = args.math
+
+    if args.insert_into:
+        if not args.under_heading:
+            logger.error("--insert-into requires --under-heading")
+            sys.exit(1)
+        from .insert import insert_markdown
+        try:
+            stats = insert_markdown(args.insert_into, args.output,
+                                    [(input_file, args.under_heading)], config=config)
+        except HwpxError as e:
+            logger.error("%s", e)
+            sys.exit(1)
+        for s in stats:
+            logger.info("Inserted %s under %r (tables %d, images %d) -> %s",
+                        s['markdown'], s['heading'], s['tables'], s['images'], args.output)
+        return
 
     # Parse Markdown with front matter
     metadata, md_content = parse_markdown_with_frontmatter(input_file)

@@ -46,6 +46,7 @@ md2hwpx/
 │   ├── __main__.py            # Module entry point (python -m md2hwpx)
 │   ├── cli.py                 # CLI entry point
 │   ├── converter_api.py       # Library API (convert_string)
+│   ├── insert.py              # Insert mode: md → section of an EXISTING hwpx (insert_markdown)
 │   ├── MarkdownToHwpx.py      # Core HWPX conversion engine
 │   ├── MarkdownToHtml.py      # HTML conversion (for debugging)
 │   ├── marko_adapter.py       # Marko AST to Pandoc-like format adapter

@@ -87,6 +87,48 @@ class ConversionConfig:
     SOURCE_NOTE_SIZE_DELTA_PT = 1.5   # Subtracted from BODY's font size (in points)
     SOURCE_NOTE_MIN_SIZE_PT = 7.0     # Floor so size never gets absurdly small
 
+    # Plain (non-italic) paragraphs that start with one of these words followed
+    # by ':' (e.g. "자료 : 국토부") are also treated as source notes. Empty = off.
+    SOURCE_NOTE_PREFIXES: tuple = ()
+
+    # === Style mapping by style NAME (no placeholder template needed) ===
+    # Maps placeholder keys to paragraph style names in the reference HWPX:
+    #   H1..H9, BODY, LIST_BULLET_1..7, LIST_ORDERED_1..7,
+    #   CAPTION (table+figure), CAPTION_TABLE, CAPTION_FIGURE,
+    #   SOURCE (source-note paragraphs), TABLE / FIGURE (paragraph holding
+    #   a table / an image-only paragraph).
+    # A header key mapped to None drops that heading level from the output.
+    # Entries here override {{PLACEHOLDER}} styles found in the template.
+    STYLE_MAP: dict = None  # e.g. {"H2": "1)", "BODY": "□", "LIST_BULLET_2": "○"}
+
+    # Copy table look (header/body cell border·fill, cell paragraph/char
+    # style, caption style, table width) from the first existing captioned
+    # table in the reference document (falls back to the first table with
+    # 2+ rows). Cell placeholders and STYLE_MAP still take precedence.
+    TABLE_STYLE_FROM_DOCUMENT: bool = False
+
+    # Column widths proportional to the longest cell text per column
+    # (used when the markdown separator row gives no differing dash counts).
+    TABLE_AUTO_WIDTH: bool = False
+
+    # === Markdown preprocessing for Korean report drafts ===
+    # Remove manual heading numbers ("가.", "1.", "1)", "(1)", "Ⅲ.", "①")
+    # because the HWPX outline style numbers headings automatically.
+    STRIP_HEADING_NUMBERS: bool = False
+    # "<표 N> 제목" line right above a table → table caption;
+    # "<그림 N> 제목" line right below an image → figure caption.
+    KOREAN_CAPTION_LINES: bool = False
+    # Caption-line format (change these if the draft convention changes).
+    # Regex must have two groups: (kind word, caption text).
+    CAPTION_LINE_REGEX: str = r'^\s*[<〈]\s*(표|그림)\s*[^>〉]*[>〉]\s*(.*?)\s*$'
+    CAPTION_TABLE_WORD: str = '표'
+    CAPTION_FIGURE_WORD: str = '그림'
+    TABLE_CAPTION_LINE_POSITION: str = 'above'   # caption line above / below the table
+    FIGURE_CAPTION_LINE_POSITION: str = 'below'  # caption line above / below the image
+    # GFM treats a single "~" as strikethrough, which eats ranges like
+    # "60~80%". False (default) keeps single "~" literal; "~~x~~" still strikes.
+    SINGLE_TILDE_STRIKETHROUGH: bool = False
+
     # === Character/Paragraph Property IDs ===
     # These are typically extracted from template, but defaults are provided
     DEFAULT_CHAR_PR_ID = 0
@@ -156,7 +198,11 @@ class ConversionConfig:
         for key, value in data.items():
             attr = key.upper()
             if hasattr(cfg, attr):
-                if isinstance(value, dict):
+                if attr == 'STYLE_MAP' and isinstance(value, dict):
+                    value = {str(k).upper(): v for k, v in value.items()}
+                elif isinstance(value, list) and attr == 'SOURCE_NOTE_PREFIXES':
+                    value = tuple(value)
+                elif isinstance(value, dict):
                     value = {int(k) if str(k).isdigit() else k: v
                              for k, v in value.items()}
                 setattr(cfg, attr, value)
