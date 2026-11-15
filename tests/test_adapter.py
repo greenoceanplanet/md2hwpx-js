@@ -632,3 +632,32 @@ class TestSourceNoteParagraph:
         result = adapter.parse("####### Extended Header")
         blocks = result['blocks']
         assert any(b['t'] == 'Header' and b['c'][0] == 7 for b in blocks)
+
+
+class TestAdapterHtmlScriptTags:
+    """<sup>/<sub> inline HTML is split into separate tokens by Marko; adapter pairs them."""
+
+    def _para(self, adapter, md):
+        return adapter.parse(md)['blocks'][0]['c']
+
+    def test_sup_in_paragraph(self, adapter):
+        inl = self._para(adapter, "자금<sup>1)</sup> 끝")
+        sup = [x for x in inl if x['t'] == 'Superscript']
+        assert len(sup) == 1
+        assert sup[0]['c'] == [{"t": "Str", "c": "1)"}]
+        assert not any(x['t'] == 'RawInline' for x in inl)
+
+    def test_sub_in_paragraph(self, adapter):
+        inl = self._para(adapter, "H<sub>2</sub>O")
+        assert any(x['t'] == 'Subscript' for x in inl)
+
+    def test_sup_in_table_cell(self, adapter):
+        md = "| a | b |\n|---|---|\n| 초기 자금<sup>1)</sup> | 4 |\n"
+        import json
+        s = json.dumps(adapter.parse(md), ensure_ascii=False)
+        assert '"Superscript"' in s
+        assert '<sup>' not in s
+
+    def test_unmatched_tag_kept(self, adapter):
+        inl = self._para(adapter, "a<sup>b")
+        assert not any(x['t'] == 'Superscript' for x in inl)

@@ -893,6 +893,49 @@ class MarkoToPandocAdapter:
                 result.extend(inlines)
             elif inlines:
                 result.append(inlines)
+        return self._wrap_html_script_tags(result)
+
+    _SCRIPT_TAGS = {'sup': 'Superscript', 'sub': 'Subscript'}
+
+    @classmethod
+    def _wrap_html_script_tags(cls, inlines: list) -> list:
+        """Wrap inlines between <sup>...</sup> / <sub>...</sub> into Superscript / Subscript.
+
+        Marko emits inline HTML tags as separate tokens (``<sup>``, text, ``</sup>``),
+        so the opening and closing tags are paired here. An unmatched tag is kept as is.
+        """
+        def tag_of(node, closing):
+            if not isinstance(node, dict) or node.get('t') != 'RawInline':
+                return None
+            c = node.get('c')
+            if not (isinstance(c, list) and len(c) >= 2 and isinstance(c[1], str)):
+                return None
+            m = re.fullmatch(r'<(/?)(sup|sub)(?:\s[^>]*)?>', c[1].strip(), re.IGNORECASE)
+            if m and bool(m.group(1)) == closing:
+                return m.group(2).lower()
+            return None
+
+        result, i = [], 0
+        while i < len(inlines):
+            node = inlines[i]
+            tag = tag_of(node, closing=False)
+            if tag:
+                depth, j = 1, i + 1
+                while j < len(inlines):
+                    if tag_of(inlines[j], closing=False) == tag:
+                        depth += 1
+                    elif tag_of(inlines[j], closing=True) == tag:
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    j += 1
+                if j < len(inlines):
+                    inner = cls._wrap_html_script_tags(inlines[i + 1:j])
+                    result.append({"t": cls._SCRIPT_TAGS[tag], "c": inner})
+                    i = j + 1
+                    continue
+            result.append(node)
+            i += 1
         return result
 
     def _convert_inline(self, elem):
